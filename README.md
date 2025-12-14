@@ -4,6 +4,11 @@
 ## Project Overview
 This project uses **Artificial Intelligence (Multiple Linear Regression)** to predict the FPL points of players for the upcoming gameweek. Developed for the **Principles of AI** Module.
 
+## Structure
+- `data/`: Contains the historical FPL datasets (Sourced from Vaastav Anand).
+- `notebooks/`: Jupyter Notebooks for Data Cleaning and Exploratory Data Analysis (EDA).
+- `docs/`: Reports
+
 ## Dataset
 Data sourced from the Vaastav Anand FPL Repository.
 - **Training Data:** Seasons 2021-2025
@@ -17,6 +22,6 @@ Data sourced from the Vaastav Anand FPL Repository.
 
 
 ## How to Run
-1. Download the `FPL_Analysis.ipynb` file.
-2. Open in Jupyter Notebook or Google Colab.
-3. Run the cells to see the Data Cleaning and Visualization.
+1. Clone this repository.
+2. Open `notebooks/FPL_Analysis.ipynb`.
+3. Run all cells to generate the "ICT Index vs Points" visualization.
