@@ -1,0 +1,1 @@
+{"rmse": 2.16, "r2": 0.196, "notes": "Linear Regression model trained on historical FPL data up to 2024-25 season to predict next gameweek points."}
