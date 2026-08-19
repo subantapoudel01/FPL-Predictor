@@ -1,32 +1,136 @@
-# Artificial Intelligence Coursework 2: FPL Points Predictor
+# ⚽ Catalan FPL Points Predictor
 
-**Module:** CU6051NP Artificial Intelligence
-**Student Name:** Subanta Poudel
-**London Met ID:** 20048736
-**College ID:** NP04CP4S210115
+An open-source **Expected Points (xP) Engine** for Fantasy Premier League (FPL). Catalan combines live FPL API data ingestion, a trained Machine Learning model, and domain-expert rule heuristics to provide actionable player performance predictions for upcoming gameweeks.
 
 ---
 
-## 🚀 How to Run the Application (For Tutors/Examiners)
+## 💡 Overview
 
-This project has been pre-configured for instant execution. The machine learning model (`linear_reg_v1.pkl`) is pre-trained and saved inside the `Models/` directory to allow for immediate testing.
+Predicting Fantasy Premier League points requires balancing empirical underlying stats with real-world managerial dynamics (rotation risk, injury status, fixture difficulty). Catalan addresses this with a **Hybrid Intelligence Architecture**:
 
-### Option 1: The 1-Click Method (Windows Recommended)
-1. Double-click the **`run_app.bat`** file located in the root folder.
-2. The script will automatically verify/install dependencies and open the interactive web dashboard in your default browser at `http://localhost:8501`.
-
-### Option 2: Manual Terminal Execution (Mac/Linux/Windows)
-If you prefer running via standard terminal commands, open your terminal inside the project root folder and execute:
-
-**Step 1: Install required libraries**
-`pip install -r requirements.txt`
-
-**Step 2: Launch the Streamlit application**
-`streamlit run app.py`
+1. **Statistical ML Baseline:** Predicts raw expected performance based on rolling underlying statistics (ICT Index, Influence, Creativity, Threat, Form, and Minutes).
+2. **Domain Expert Heuristics:** Adjusts raw predictions for fixture difficulty ratings (FDR), position-specific clean sheet probabilities, premium asset captaincy potential, and rotation taxes.
 
 ---
 
-## 🧠 System Overview
-This application functions as a Goal-Based Rational Agent utilizing a **Hybrid Intelligence Architecture**:
-1. **Statistical AI Core:** A Multiple Linear Regression model trained on historical player records (Seasons 2021-2025) to predict base Expected Points based on Form, ICT Index, and Minutes.
-2. **Expert Domain Rules:** A rule-based heuristic layer that adjusts predictions for tactical realities such as rotation ("Big Club Tax"), fixture difficulty ratings, and strict starter probabilities.
+## 🏗️ Architecture
+
+```
+                                  ┌───────────────────────────┐
+                                  │   Official FPL Live API   │
+                                  └─────────────┬─────────────┘
+                                                │
+                                                ▼
+┌──────────────────────────┐      ┌───────────────────────────┐
+│   Pre-trained ML Model   ├─────►│    Feature Normalization  │
+│  (Models/linear_reg_v1)  │      │     (src/features.py)     │
+└──────────────────────────┘      └─────────────┬─────────────┘
+                                                │
+                                                ▼
+                                  ┌───────────────────────────┐
+                                  │   Hybrid Prediction Engine│
+                                  │    (src/predictor.py)     │
+                                  └─────────────┬─────────────┘
+                                                │
+                                                ▼
+                                  ┌───────────────────────────┐
+                                  │   Streamlit Web Interface │
+                                  │         (app.py)          │
+                                  └───────────────────────────┘
+```
+
+### Key Components
+
+- **Data Ingestion Layer (`src/data_loader.py`):** Ingests live player metadata, fixture schedules, and injury updates from the official FPL `bootstrap-static` and `fixtures` endpoints with caching and robust error handling.
+- **Feature Engineering (`src/features.py`):** Normalizes player statistics across active gameweeks, handles pre-season edge cases safely, and constructs 3-game rolling metrics (`rolling_3_minutes`, `rolling_3_ict_index`, `rolling_3_creativity`, etc.).
+- **Prediction Engine (`src/predictor.py`):** 
+  - Loads serialized scikit-learn model via `pathlib`.
+  - Calculates base expected points (`raw_xp`).
+  - Applies expert rules:
+    - **Appearance Floor:** Stepped starter probability curve based on average minutes.
+    - **Fixture Difficulty:** Heuristic score adjustments (−1.0 to +2.5 pts) according to opponent FDR.
+    - **Clean Sheet Boost:** Additional point weighting for DEF/GKP against weak opposition.
+    - **Premium Captain Boost:** Bonus points for £10m+ premium assets facing favorable fixtures (FDR ≤ 3).
+    - **Big Club Rotation Tax:** Scaled haircut for non-premium (<£9.0m) attackers playing for high-rotation squads.
+    - **Availability Filter:** Multiplicative scaling based on official `chance_of_playing` indicators.
+- **Dashboard (`app.py`):** Interactive Streamlit web interface featuring position filtering, player search, top-pick visual highlighting, and system status monitors.
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Python 3.10 or higher
+- `pip` package manager
+
+### Installation
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/subantapoudel01/FPL-Predictor.git
+   cd FPL-Predictor
+   ```
+
+2. **Create and activate a virtual environment (optional but recommended):**
+   ```bash
+   python -m venv venv
+   # On Windows:
+   venv\Scripts\activate
+   # On macOS/Linux:
+   source venv/bin/activate
+   ```
+
+3. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Launch the application:**
+   ```bash
+   streamlit run app.py
+   ```
+   The dashboard will automatically open in your browser at `http://localhost:8501`.
+
+#### Windows 1-Click Launcher
+On Windows, you can double-click `run__app.bat` in the root directory to automatically launch the application.
+
+---
+
+## 📂 Project Structure
+
+```
+├── app.py                  # Main Streamlit web application
+├── src/
+│   ├── __init__.py
+│   ├── data_loader.py      # FPL API client with caching
+│   ├── features.py         # Feature engineering & pre-season handling
+│   └── predictor.py        # ML model loader & expert rules logic
+├── Models/
+│   └── linear_reg_v1.pkl   # Serialized Linear Regression model
+├── Notebooks/              # Data analysis & model training notebooks
+├── requirements.txt        # Python package dependencies
+├── run__app.bat            # Windows 1-click batch launcher
+└── README.md
+```
+
+---
+
+## ⚠️ Current Limitations
+
+- **No Price Forecasting:** Uses current player values (`now_cost`) without modeling future market price fluctuations.
+- **Domestic Focus:** Analyzes Premier League fixtures only; does not factor in mid-week European (Champions League/Europa League) or domestic cup fatigue and rotation.
+- **Pre-Season Baseline:** Before Gameweek 1 commences, cumulative season statistics are zeroed out until live match data populates.
+- **Baseline Model:** Currently utilizes a Multiple Linear Regression base model. The future roadmap includes transitioning to LightGBM/XGBoost and incorporating multi-season rolling lag features.
+
+---
+
+## 👤 Author
+
+Developed by **Subanta Poudel**.  
+Feedback, suggestions, and pull requests are welcome!
+
+---
+
+## 📜 License
+
+This project is open-source and available under the [MIT License](LICENSE).

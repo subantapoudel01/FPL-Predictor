@@ -18,7 +18,7 @@ st.set_page_config(
 
 # --- HEADER  ---
 st.title("⚽ Catalan FPL Predictor")
-st.markdown("**Created by Subanta Poudel** | *CU6051NP AI Coursework*")
+st.markdown("**Created by Subanta Poudel** | *Hybrid Intelligence Expected Points (xP) Engine*")
 st.markdown("---")
 
 # --- DATA INGESTION LAYER ---
@@ -36,12 +36,15 @@ if not raw_json or not model:
     st.stop()
 
 # Pre-calculate Live Data
-df_live, CURRENT_GW = process_data(raw_json, target_gw=None)
-df_live = make_predictions(df_live, model)
+df_live, CURRENT_GW, IS_PRESEASON = process_data(raw_json, target_gw=None)
+df_live = make_predictions(df_live, model, is_preseason=IS_PRESEASON)
 
 # --- SIDEBAR ---
 st.sidebar.header("⚙️ Control Panel")
-st.sidebar.info(f"System Status: **GW {CURRENT_GW} Active**")
+if IS_PRESEASON:
+    st.sidebar.info("System Status: **Season Has Not Started**")
+else:
+    st.sidebar.info(f"System Status: **GW {CURRENT_GW} Active**")
 
 try:
     with open('metrics.json', 'r') as f:
@@ -55,11 +58,15 @@ except FileNotFoundError:
     pass
 
 # --- TABS ---
-tab_pred, tab_test, tab_info = st.tabs(["🔮 Predictions", "✅ Validation (Backtest)", "ℹ️ Documentation"])
+tab_pred, tab_info = st.tabs(["🔮 Predictions", "ℹ️ Documentation"])
 
 # === TAB 1: LIVE PREDICTIONS ===
 with tab_pred:
-    st.subheader(f"🚀 Predicted Points for GW {CURRENT_GW + 1}")
+    if IS_PRESEASON:
+        st.warning("⚠️ **Season Has Not Started:** Gameweek 1 has not commenced yet. Live predictions will safely populate once match data becomes available.")
+        st.subheader("🚀 Predicted Points for GW 1 (Pre-Season State)")
+    else:
+        st.subheader(f"🚀 Predicted Points for GW {CURRENT_GW + 1}")
     
     # 1. Controls
     c1, c2, c3 = st.columns([1, 2, 1])
@@ -79,6 +86,7 @@ with tab_pred:
         'next_opponent': 'Opponent',
         'position': 'Pos',
         'final_xp': 'Predicted Points', 
+        'reasoning': 'Reasoning',
         'value': 'Price (£m)', 
         'next_match_difficulty': 'Diff (1-5)'
     }
@@ -96,45 +104,25 @@ with tab_pred:
         height=600
     )
 
-# === TAB 2: BACKTESTING ===
-with tab_test:
-    st.header("🧪 Historical Validation")
-    st.markdown("Re-run the model on past Gameweeks to verify accuracy.")
-    
-    # Ensure the dropdown always has at least '1' even in the summer break
-    valid_gws = list(range(1, max(2, CURRENT_GW + 1)))[::-1]
-    target_gw = st.selectbox("Select Gameweek to Analyze:", valid_gws)
-    
-    if st.button(f"Run Backtest for GW {target_gw}"):
-        with st.spinner("Fetching historical match data..."):
-            actual_df = fetch_gameweek_history(target_gw)
-            
-        # GRACEFUL ERROR HANDLING: Check if the API returned empty summer data
-        if actual_df is not None and not actual_df.empty and 'id' in actual_df.columns:
-            retro_df, _ = process_data(raw_json, target_gw=target_gw)
-            retro_preds = make_predictions(retro_df, model)
-            
-            merged = pd.merge(retro_preds, actual_df, on='id', how='inner')
-            merged['Error'] = merged['final_xp'] - merged['actual_points']
-            rmse_val = np.sqrt((merged['Error'] ** 2).mean())
-            
-            k1, k2, k3 = st.columns(3)
-            k1.metric("RMSE (This Week)", f"{rmse_val:.2f}")
-            k2.metric("Players Analyzed", f"{len(merged)}")
-            k3.metric("Top Performer", f"{merged.sort_values('actual_points', ascending=False).iloc[0]['web_name']}")
-            
-            st.dataframe(
-                merged[['web_name', 'next_opponent', 'final_xp', 'actual_points', 'Error']]
-                .rename(columns={'web_name': 'Player', 'final_xp': 'Predicted', 'actual_points': 'Actual', 'next_opponent': 'Opponent'})
-                .sort_values(by='Actual', ascending=False)
-                .head(20),
-                use_container_width=True, hide_index=True
-            )
-        else:
-            # Show a friendly UI message instead of a red crash screen!
-            st.warning("⚠️ **Summer Off-Season Detected:** The official FPL API has reset historical match data for the new season. The Live Backtesting module will automatically resume functionality once Gameweek 1 is completed.")
+# === TAB 2: BACKTESTING (DISABLED DUE TO DATA LEAKAGE) ===
+# DISABLED: Passing today's live API snapshot (`raw_json`) into past gameweek calculations (`target_gw`)
+# introduces severe data leakage by using future accumulated season stats to predict past outcomes.
+# Real backtesting requires point-in-time historical data snapshots for each target gameweek.
+# To prevent misleading accuracy metrics in the UI, this tab rendering has been disabled.
+#
+# Original implementation reference:
+# with tab_test:
+#     st.header("🧪 Historical Validation")
+#     st.markdown("Re-run the model on past Gameweeks to verify accuracy.")
+#     valid_gws = list(range(1, max(2, CURRENT_GW + 1)))[::-1]
+#     target_gw = st.selectbox("Select Gameweek to Analyze:", valid_gws)
+#     if st.button(f"Run Backtest for GW {target_gw}"):
+#         actual_df = fetch_gameweek_history(target_gw)
+#         if actual_df is not None and not actual_df.empty and 'id' in actual_df.columns:
+#             retro_df, _, _ = process_data(raw_json, target_gw=target_gw)
+#             retro_preds = make_predictions(retro_df, model)
 
-# === TAB 3: DOCUMENTATION ===
+# === TAB 2: DOCUMENTATION ===
 with tab_info:
     st.header("📘 System Documentation")
     
@@ -164,7 +152,7 @@ with tab_info:
         """)
 
     st.subheader("3. Credits")
-    st.text(f"Developed by Subanta Poudel\nUniversity ID: 20048736\nLast Updated: {datetime.now().strftime('%Y-%m-%d')}")
+    st.text(f"Developed by Subanta Poudel\nLast Updated: {datetime.now().strftime('%Y-%m-%d')}")
 
 # --- FOOTER ---
 st.markdown("---")
