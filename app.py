@@ -63,20 +63,22 @@ tab_pred, tab_info = st.tabs(["🔮 Predictions", "ℹ️ Documentation"])
 # === TAB 1: LIVE PREDICTIONS ===
 with tab_pred:
     if IS_PRESEASON:
-        st.warning("⚠️ **Season Has Not Started:** Gameweek 1 has not commenced yet. Live predictions will safely populate once match data becomes available.")
-        st.subheader("🚀 Predicted Points for GW 1 (Pre-Season State)")
+        st.info("ℹ️ **Pre-Season Active:** Gameweek 1 has not commenced yet. Predictions are calculated using prior season baselines (with positional median imputation for new transfers).")
+        st.subheader("🚀 Predicted Points for GW 1 (Pre-Season Baselines)")
     else:
         st.subheader(f"🚀 Predicted Points for GW {CURRENT_GW + 1}")
     
     # 1. Controls
-    c1, c2, c3 = st.columns([1, 2, 1])
+    unique_teams = ["All"] + sorted([t for t in df_live['team_name'].dropna().unique()])
+    c1, c2, c3 = st.columns([1, 1, 2])
     with c1: filter_pos = st.selectbox("Filter Position", ["All", "GKP", "DEF", "MID", "FWD"])
-    with c2: search_query = st.text_input("Search Player")
-    
+    with c2: filter_team = st.selectbox("Filter Team", unique_teams)
+    with c3: search_query = st.text_input("Search Player")
     
     # 2. Filtering
     view_df = df_live.copy()
     if filter_pos != "All": view_df = view_df[view_df['position'] == filter_pos]
+    if filter_team != "All": view_df = view_df[view_df['team_name'] == filter_team]
     if search_query: view_df = view_df[view_df['web_name'].str.contains(search_query, case=False)]
     
     # 3. Preparation for Display
@@ -91,7 +93,7 @@ with tab_pred:
         'next_match_difficulty': 'Diff (1-5)'
     }
     
-    final_table = view_df[display_cols.keys()].rename(columns=display_cols).sort_values(by='Predicted Points', ascending=False).head(50).reset_index(drop=True)
+    final_table = view_df[display_cols.keys()].rename(columns=display_cols).sort_values(by='Predicted Points', ascending=False).reset_index(drop=True)
     
     # 4. HIGHLIGHT TOP 5 PLAYERS (The Visual Fix)
     def highlight_top5(s):
@@ -109,18 +111,6 @@ with tab_pred:
 # introduces severe data leakage by using future accumulated season stats to predict past outcomes.
 # Real backtesting requires point-in-time historical data snapshots for each target gameweek.
 # To prevent misleading accuracy metrics in the UI, this tab rendering has been disabled.
-#
-# Original implementation reference:
-# with tab_test:
-#     st.header("🧪 Historical Validation")
-#     st.markdown("Re-run the model on past Gameweeks to verify accuracy.")
-#     valid_gws = list(range(1, max(2, CURRENT_GW + 1)))[::-1]
-#     target_gw = st.selectbox("Select Gameweek to Analyze:", valid_gws)
-#     if st.button(f"Run Backtest for GW {target_gw}"):
-#         actual_df = fetch_gameweek_history(target_gw)
-#         if actual_df is not None and not actual_df.empty and 'id' in actual_df.columns:
-#             retro_df, _, _ = process_data(raw_json, target_gw=target_gw)
-#             retro_preds = make_predictions(retro_df, model)
 
 # === TAB 2: DOCUMENTATION ===
 with tab_info:
@@ -130,7 +120,7 @@ with tab_info:
     st.markdown("""
     The **Catalan AI Predictor** uses a hybrid architecture:
     * **Data Layer:** Live API ingestion from FPL endpoints.
-    * **Model Layer:** Linear Regression trained on 2016-2024 historical data.
+    * **Model Layer:** Linear Regression trained on 2021–2025 historical data.
     * **Logic Layer:** Rule-based adjustments for 'Pep Roulette' (Rotation) and Fixture Difficulty.
     """)
     
@@ -141,6 +131,7 @@ with tab_info:
         st.success("""
         * **Hybrid AI:** Combines Linear Regression with Expert Rules.
         * **Live Context:** Adjusts for Injuries, Fixture Difficulty, and Rotation Risks.
+        * **Explainable Math:** Outputs step-by-step reasoning breakdown for every player.
         * **Bias Correction:** Includes a "Big Club Tax" for non-premium assets.
         """)
     with c2:
@@ -148,7 +139,7 @@ with tab_info:
         st.error("""
         * **No Price Forecasting:** Uses current market values only.
         * **No Cup Fatigue:** Ignores non-PL competitions.
-        * **Backtest Limits:** Uses current injury status for past weeks.
+        * **Expert Heuristic Layer:** Quantitative tests indicate hand-crafted rules optimize Top-20 ranking utility while introducing slight point variance bias.
         """)
 
     st.subheader("3. Credits")
