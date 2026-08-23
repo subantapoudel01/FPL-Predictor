@@ -15,8 +15,8 @@ def load_model():
 def make_predictions(df, model, is_preseason=False):
     """
     Hybrid Prediction System:
-    1. Linear Regression (Base Performance)
-    2. Expert Rules (Context Awareness)
+    1. Linear Regression (Base Performance without appearance double-counting)
+    2. Expert Rules (Context Awareness & Dynamic Squad Depth Rotation)
     3. Edge Case Guards & Mathematical Reasoning Tracking
     """
     features = [
@@ -26,8 +26,18 @@ def make_predictions(df, model, is_preseason=False):
     
     X = df[features].fillna(0)
     
-    # 1. AI Prediction (Raw Potential)
+    # 1. AI Prediction (Raw Potential - inherently models baseline appearance)
     df['raw_xp'] = model.predict(X)
+    
+    # 2. Dynamic Squad Depth Calculation (Sprint 3)
+    df['val_m'] = df['value'].apply(lambda v: (v / 10.0 if v > 20 else v) if pd.notna(v) else 0.0)
+    status_series = df['status'] if 'status' in df.columns else pd.Series(['a'] * len(df), index=df.index)
+    
+    # Calculate active senior midfielders/attackers above average squad cost (val_m >= 5.5m)
+    active_mask = (df['val_m'] >= 5.5) & (status_series.isin(['a', 'd']))
+    attacker_counts = df[active_mask & df['position'].isin(['MID', 'FWD'])].groupby('team_name')['id'].count()
+    # Clubs with dense positional competition (5+ active senior attackers above average cost) are flagged
+    deep_squad_teams = set(attacker_counts[attacker_counts >= 5].index)
     
     def apply_expert_logic(row):
         prefix = "(Prior season baseline) " if is_preseason else ""
@@ -45,19 +55,11 @@ def make_predictions(df, model, is_preseason=False):
             reasoning = f"{prefix}0.0 pts (Injured / Suspended / Unavailable)"
             return pd.Series([0.0, reasoning], index=['final_xp', 'reasoning'])
             
-        # A. Base Appearance Points
-        base_points = 0.0
-        starter_prob = float(row.get('starter_prob', 0)) if pd.notna(row.get('starter_prob')) else 0.0
-        if starter_prob > 50:
-            base_points = 2.0
-        elif starter_prob > 10:
-            base_points = 1.0
-            
-        # B. AI Performance Points
+        # A. AI Performance Points (Raw prediction directly from LR without appearance double-counting)
         raw_val = float(row.get('raw_xp', 0)) if pd.notna(row.get('raw_xp')) else 0.0
         ai_points = max(0.0, raw_val)
         
-        # C. Fixture Difficulty Adjustments
+        # B. Fixture Difficulty Adjustments
         diff = float(row.get('next_match_difficulty', 3)) if pd.notna(row.get('next_match_difficulty')) else 3.0
         fixture_bonus = 0.0
         if diff == 1:
@@ -69,30 +71,32 @@ def make_predictions(df, model, is_preseason=False):
         elif diff == 5:
             fixture_bonus = -1.0  # vs Title contender
         
-        # D. Premium Captain Boost
-        val = float(row.get('value', 0)) if pd.notna(row.get('value')) else 0.0
-        val_m = val / 10.0 if val > 20 else val
+        # C. Premium Captain Boost
+        val_m = float(row.get('val_m', 0)) if pd.notna(row.get('val_m')) else 0.0
         star_bonus = 0.0
         if val_m > 10.0 and diff <= 3:
             star_bonus = 1.5
             
-        subtotal = base_points + ai_points + fixture_bonus + star_bonus
+        subtotal = ai_points + fixture_bonus + star_bonus
         
-        # E. Clean Sheet Boost
+        # D. Clean Sheet Boost
         cs_bonus = 0.0
         if row.get('position') in ['DEF', 'GKP'] and diff <= 2:
             cs_bonus = 1.0
             subtotal += cs_bonus
             
-        # F. Pep Tax (Rotation Risk)
-        super_teams = ["MCI", "ARS", "LIV", "CHE", "Man City", "Arsenal", "Liverpool", "Chelsea"]
+        # E. Dynamic Squad Depth Rotation Risk (Sprint 3)
+        # Apply proportional rotation haircut only to non-guaranteed starters on high-competition squads
+        starter_prob = float(row.get('starter_prob', 100)) if pd.notna(row.get('starter_prob')) else 100.0
+        is_guaranteed_starter = (starter_prob >= 90) or (val_m >= 9.0)
+        
         rotation_tax = 0.0
-        if row.get('team_name') in super_teams and row.get('position') in ['MID', 'FWD'] and val_m < 9.0:
+        if row.get('team_name') in deep_squad_teams and row.get('position') in ['MID', 'FWD'] and not is_guaranteed_starter:
             post_tax = subtotal * 0.75
             rotation_tax = subtotal - post_tax
             subtotal = post_tax
             
-        # G. Selection & Partial Injury Doubt Multipliers
+        # F. Selection & Partial Injury Doubt Multipliers
         rotation_factor = starter_prob / 100.0
         has_partial_injury = (0 < chance < 100)
         injury_factor = (chance / 100.0) if has_partial_injury else 1.0
@@ -100,12 +104,9 @@ def make_predictions(df, model, is_preseason=False):
         final_xp = subtotal * rotation_factor * injury_factor
         final_xp = float(np.clip(final_xp, 0.0, 18.0))
         
-        # Build Reasoning String
+        # Build Reasoning String (Starting with base xP)
         parts = []
-        if base_points > 0:
-            parts.append(f"{base_points:.1f} (appearance)")
-        if ai_points > 0:
-            parts.append(f"{ai_points:.1f} (base xP)")
+        parts.append(f"{ai_points:.1f} (base xP)")
         if fixture_bonus > 0:
             parts.append(f"+ {fixture_bonus:.1f} (easy fixture)")
         elif fixture_bonus < 0:
@@ -115,19 +116,16 @@ def make_predictions(df, model, is_preseason=False):
         if cs_bonus > 0:
             parts.append(f"+ {cs_bonus:.1f} (clean sheet)")
         if rotation_tax > 0:
-            parts.append(f"- {rotation_tax:.1f} (rotation tax)")
+            parts.append(f"- {rotation_tax:.1f} (Squad depth rotation risk)")
         if rotation_factor < 1.0 and rotation_factor > 0:
             parts.append(f"x {rotation_factor:.2f} (starter prob)")
         if has_partial_injury:
             parts.append(f"x {injury_factor:.2f} ({int(chance)}% injury doubt)")
 
-        if not parts:
-            reasoning = f"{prefix}{final_xp:.1f} pts"
-        else:
-            first = parts[0]
-            rest = " ".join([p if p.startswith(("+", "-", "x")) else f"+ {p}" for p in parts[1:]])
-            expr = f"{first} {rest}".strip()
-            reasoning = f"{prefix}{final_xp:.1f} pts = {expr}"
+        first = parts[0]
+        rest = " ".join([p if p.startswith(("+", "-", "x")) else f"+ {p}" for p in parts[1:]])
+        expr = f"{first} {rest}".strip()
+        reasoning = f"{prefix}{final_xp:.1f} pts = {expr}"
 
         return pd.Series([final_xp, reasoning], index=['final_xp', 'reasoning'])
 

@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import unicodedata
 import re
+import streamlit as st
 
 def _normalize_name(name):
     """
@@ -84,17 +85,19 @@ def process_data(api_data, target_gw=None):
     fixtures = api_data['fixtures']
     events = static.get('events', [])
     
-    # Detect if season has not started yet (all events finished == False)
-    is_preseason = not any(e.get('finished', False) for e in events)
-    completed_gws = sum(1 for e in events if e.get('finished', False))
-
-    # 1. Identify Time
-    current_real_gw = next((e['id'] for e in events if e.get('is_current')), None)
-    if current_real_gw is None:
-        current_real_gw = next((e['id'] for e in events if e.get('is_next')), 1)
+    # 1. Identify Target Gameweek & Pre-Season Status
+    next_event = next((e for e in events if e.get('is_next')), None)
+    if next_event is None:
+        next_event = next((e for e in events if not e.get('finished')), None)
         
+    detected_gw = next_event['id'] if next_event else 1
     if target_gw is None:
-        target_gw = current_real_gw
+        target_gw = detected_gw
+        
+    gw1_fixtures = [f for f in fixtures if f.get('event') == 1]
+    gw1_started = any(f.get('started', False) or f.get('finished', False) for f in gw1_fixtures)
+    is_preseason = (target_gw == 1) and (not gw1_started)
+    completed_gws = sum(1 for e in events if e.get('finished', False))
         
     df = pd.DataFrame(static['elements'])
     
@@ -231,4 +234,69 @@ def process_data(api_data, target_gw=None):
         if col in df.columns:
             df[col] = df[col].fillna(0)
             
-    return df, current_real_gw, is_preseason
+    return df, target_gw, is_preseason
+
+@st.cache_data(ttl=604800)
+def fetch_full_history():
+    """
+    Fetches complete multi-season historical player gameweek datasets
+    dynamically from Vaastav GitHub repository using PyArrow engine and column trimming.
+    Cached for 7 days (ttl=604800) for maximum performance.
+    """
+    seasons = {
+        "2025-26": "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/2025-26/gws/merged_gw.csv",
+        "2024-25": "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/2024-25/gws/merged_gw.csv",
+        "2023-24": "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/2023-24/gws/merged_gw.csv",
+        "2022-23": "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/2022-23/gws/merged_gw.csv",
+    }
+    
+    needed_cols = [
+        'name', 'GW', 'total_points', 'minutes', 'fixture', 'opponent_team',
+        'was_home', 'ict_index', 'creativity', 'influence', 'threat', 'value'
+    ]
+    
+    dfs = []
+    for season_name, url in seasons.items():
+        try:
+            try:
+                df_season = pd.read_csv(url, usecols=needed_cols, engine='pyarrow')
+            except Exception:
+                df_season = pd.read_csv(url, usecols=lambda c: c in needed_cols)
+                
+            df_season['season'] = season_name
+            dfs.append(df_season)
+        except Exception:
+            continue
+            
+    if not dfs:
+        local_path = Path(__file__).resolve().parent.parent / "Data" / "Cleaned" / "model_ready_data.csv"
+        if local_path.exists():
+            return pd.read_csv(local_path)
+        return pd.DataFrame()
+        
+    df = pd.concat(dfs, ignore_index=True)
+    df = df.drop_duplicates(subset=['name', 'season', 'GW'], keep='first')
+    df = df.sort_values(['name', 'season', 'GW']).reset_index(drop=True)
+    
+    num_cols = ['minutes', 'ict_index', 'creativity', 'influence', 'threat', 'total_points', 'value']
+    for col in num_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+    cols_to_roll = {
+        'minutes': 'rolling_3_minutes',
+        'ict_index': 'rolling_3_ict_index',
+        'creativity': 'rolling_3_creativity',
+        'influence': 'rolling_3_influence',
+        'threat': 'rolling_3_threat',
+        'total_points': 'rolling_3_total_points'
+    }
+    
+    for src_col, target_col in cols_to_roll.items():
+        df[target_col] = (
+            df.groupby(['name', 'season'])[src_col]
+            .transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+            .fillna(0)
+        )
+        
+    return df

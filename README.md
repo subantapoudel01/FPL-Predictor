@@ -1,5 +1,7 @@
 # ⚽ Catalan FPL Points Predictor
 
+**Project Established: October 2025** | **Current Engine: Catalan AI Predictor v1.2**
+
 An open-source **Expected Points (xP) Engine** for Fantasy Premier League (FPL). Catalan combines live FPL API data ingestion, a trained Machine Learning model, and domain-expert rule heuristics to provide actionable player performance predictions for upcoming gameweeks.
 
 ---
@@ -124,9 +126,12 @@ On Windows, you can double-click `run__app.bat` in the root directory to automat
 
 ---
 
-## 👤 Author
+## 👤 Author & Timeline
 
 Developed by **Subanta Poudel**.  
+- **Project Established:** October 2025  
+- **Current Engine Version:** Catalan AI Predictor v1.2  
+
 Feedback, suggestions, and pull requests are welcome!
 
 ---
