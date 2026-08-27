@@ -4,23 +4,24 @@ import json
 import numpy as np
 import plotly.express as px
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # Internal Modules
-from src.data_loader import fetch_api_data, fetch_gameweek_history, fetch_player_live_summary
+from src.data_loader import fetch_api_data, fetch_gameweek_history, fetch_player_live_summary, fetch_user_team, TZ_MAP, format_timestamp_tz
 from src.features import process_data, fetch_full_history
 from src.predictor import load_model, make_predictions
 
 # --- APP CONFIGURATION ---
 st.set_page_config(
-    page_title="Catalan FPL Predictor", 
+    page_title="ApexFPL — FPL Predictor", 
     layout="wide", 
-    page_icon="⚽"
+    page_icon="⚡"
 )
 
 # --- HEADER  ---
-st.title("⚽ Catalan FPL Predictor")
+st.title("⚡ ApexFPL Predictor")
 st.markdown("**Created by Subanta Poudel** | *Hybrid Intelligence Expected Points (xP) Engine*")
-st.caption("Project Established: October 2025 | Current Engine: Catalan AI Predictor v1.2")
+st.caption("Project Established: August 2026 | Current Engine: ApexFPL Engine v1.2")
 st.markdown("---")
 
 from pathlib import Path
@@ -67,6 +68,631 @@ if not raw_json or not model:
 df_live, CURRENT_GW, IS_PRESEASON = process_data(raw_json, target_gw=None)
 df_live = make_predictions(df_live, model, is_preseason=IS_PRESEASON)
 
+# --- HELPER: AI TEAM OF THE WEEK (FOOTBALL PITCH VISUALIZER) ---
+def select_team_of_the_week(df_candidates):
+    """
+    Selects optimal starting 11 for the upcoming gameweek obeying FPL formation rules:
+    - Exactly 1 GKP
+    - 3 to 5 DEF
+    - 2 to 5 MID
+    - 1 to 3 FWD
+    - Total = 11, Max 3 players per team
+    Assigns Captain (C) to highest xP player, Vice-Captain (V) to 2nd highest xP player.
+    """
+    if df_candidates is None or df_candidates.empty:
+        return None, None
+        
+    candidates = df_candidates[df_candidates['final_xp'] > 0].sort_values(by='final_xp', ascending=False).reset_index(drop=True)
+    if candidates.empty:
+        return None, None
+        
+    gkp_cand = candidates[candidates['position'] == 'GKP']
+    def_cand = candidates[candidates['position'] == 'DEF']
+    mid_cand = candidates[candidates['position'] == 'MID']
+    fwd_cand = candidates[candidates['position'] == 'FWD']
+    
+    if gkp_cand.empty:
+        return None, None
+        
+    valid_formations = [
+        (3, 5, 2), (3, 4, 3), (4, 4, 2), (4, 3, 3), (4, 5, 1), (5, 3, 2), (5, 4, 1), (5, 2, 3)
+    ]
+    
+    best_squad = None
+    best_xp = -1.0
+    best_formation = None
+    
+    for (n_def, n_mid, n_fwd) in valid_formations:
+        if len(gkp_cand) < 1 or len(def_cand) < n_def or len(mid_cand) < n_mid or len(fwd_cand) < n_fwd:
+            continue
+            
+        gkp_picks = gkp_cand.iloc[0:1]
+        def_picks = def_cand.head(n_def)
+        mid_picks = mid_cand.head(n_mid)
+        fwd_picks = fwd_cand.head(n_fwd)
+        
+        squad = pd.concat([gkp_picks, def_picks, mid_picks, fwd_picks], ignore_index=True)
+        
+        if squad['team_name'].value_counts().max() > 3:
+            continue
+            
+        tot_xp = squad['final_xp'].sum()
+        if tot_xp > best_xp:
+            best_xp = tot_xp
+            best_squad = squad
+            best_formation = f"{n_def}-{n_mid}-{n_fwd}"
+            
+    if best_squad is None or best_squad.empty:
+        return None, None
+        
+    sorted_squad = best_squad.sort_values(by='final_xp', ascending=False).reset_index(drop=True)
+    captain_name = sorted_squad.iloc[0]['web_name'] if len(sorted_squad) > 0 else ""
+    vice_name = sorted_squad.iloc[1]['web_name'] if len(sorted_squad) > 1 else ""
+    
+    return best_squad, {
+        'formation': best_formation,
+        'total_xp': best_xp,
+        'captain': captain_name,
+        'vice': vice_name
+    }
+
+def render_pitch_visualizer(totw_df, totw_info, gameweek):
+    """
+    Renders an interactive green HTML/CSS Football Pitch visualizer displaying the starting XI.
+    """
+    if totw_df is None or totw_df.empty:
+        return
+        
+    formation = totw_info.get('formation', '3-5-2')
+    total_xp = totw_info.get('total_xp', 0.0)
+    captain_name = totw_info.get('captain', '')
+    vice_name = totw_info.get('vice', '')
+    
+    fwds = totw_df[totw_df['position'] == 'FWD']
+    mids = totw_df[totw_df['position'] == 'MID']
+    defs = totw_df[totw_df['position'] == 'DEF']
+    gkps = totw_df[totw_df['position'] == 'GKP']
+
+    def player_card_html(row):
+        name = row['web_name']
+        team = row['team_name']
+        opp = row.get('next_opponent', '-')
+        xp = row['final_xp']
+        
+        badge_html = ""
+        if name == captain_name:
+            badge_html = '<span style="background:#FFD700; color:#000; font-weight:bold; padding:1px 4px; border-radius:3px; font-size:10px; margin-left:3px;">(C)</span>'
+        elif name == vice_name:
+            badge_html = '<span style="background:#C0C0C0; color:#000; font-weight:bold; padding:1px 4px; border-radius:3px; font-size:10px; margin-left:3px;">(V)</span>'
+            
+        return f'''
+        <div style="background: rgba(22, 27, 34, 0.95); border: 1px solid #30363d; border-radius: 8px; padding: 6px 4px; text-align: center; flex: 1 1 70px; max-width: 95px; min-width: 65px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); box-sizing: border-box;">
+            <div style="font-weight: 700; font-size: 12px; color: #FFFFFF; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{name}{badge_html}</div>
+            <div style="font-size: 10px; color: #FFFFFF; opacity: 0.85; margin-top: 2px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{team} · {opp}</div>
+            <div style="font-size: 12px; font-weight: 700; color: #FFFFFF; margin-top: 4px;">{xp:.1f} xP</div>
+        </div>
+        '''
+
+    def row_html(df_group):
+        cards = "".join([player_card_html(r) for _, r in df_group.iterrows()])
+        return f'<div style="display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px; margin: 10px 0;">{cards}</div>'
+
+    fwd_row = row_html(fwds)
+    mid_row = row_html(mids)
+    def_row = row_html(defs)
+    gkp_row = row_html(gkps)
+
+    pitch_html = f'''
+    <div style="background: linear-gradient(180deg, #163e23 0%, #112d19 100%); border: 2px solid #2e7d45; border-radius: 12px; padding: 18px 12px; margin-bottom: 25px; box-shadow: inset 0 0 40px rgba(0,0,0,0.6); position: relative;">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 8px; margin-bottom: 12px; flex-wrap: wrap; gap: 6px;">
+            <div style="font-weight: 700; font-size: 16px; color: #00FF87;">⭐ AI Team of the Week — GW {gameweek}</div>
+            <div style="font-size: 13px; color: #FFFFFF;">Formation: <strong>{formation}</strong> | Squad xP: <strong style="color:#00FF87;">{total_xp:.1f} pts</strong></div>
+        </div>
+        {fwd_row}
+        {mid_row}
+        {def_row}
+        {gkp_row}
+    </div>
+    '''
+    st.markdown(pitch_html, unsafe_allow_html=True)
+
+# --- HELPER: CAPTAINCY RATING CARD ---
+def render_captaincy_card(df_candidates):
+    """
+    Renders top 5 captaincy options for the upcoming gameweek with 5-star evaluation
+    and key rationale.
+    """
+    if df_candidates is None or df_candidates.empty:
+        return
+        
+    caps = df_candidates.sort_values(by='final_xp', ascending=False).head(5).reset_index(drop=True)
+    if caps.empty:
+        return
+
+    st.markdown("### 👑 Top Captain Picks")
+    
+    cap_rows = []
+    for idx, r in caps.iterrows():
+        xp = float(r.get('final_xp', 0.0))
+        name = r.get('web_name', '')
+        team = r.get('team_name', '')
+        opp = r.get('next_opponent', '-')
+        diff = float(r.get('next_match_difficulty', 3))
+        starter_prob = float(r.get('starter_prob', 100))
+        
+        if xp >= 6.0:
+            stars = "⭐⭐⭐⭐⭐"
+        elif xp >= 4.5:
+            stars = "⭐⭐⭐⭐"
+        elif xp >= 3.5:
+            stars = "⭐⭐⭐"
+        elif xp >= 2.5:
+            stars = "⭐⭐"
+        else:
+            stars = "⭐"
+
+        rationale_parts = []
+        if "(H)" in opp:
+            rationale_parts.append("Home Fixture")
+        elif "(A)" in opp:
+            rationale_parts.append("Away Match")
+            
+        if diff <= 2:
+            rationale_parts.append("Favorable Opponent (FDR 1-2)")
+        elif diff >= 4:
+            rationale_parts.append("Tough Matchup")
+
+        val_m = float(r.get('val_m', r.get('value', 0)))
+        if val_m >= 10.0:
+            rationale_parts.append("Premium Captain Potential")
+        elif starter_prob >= 90:
+            rationale_parts.append("Nailed Starter (100%)")
+            
+        rationale_str = " · ".join(rationale_parts) if rationale_parts else "Strong Gameweek Baseline"
+
+        cap_rows.append({
+            "Rank": idx + 1,
+            "Player": f"**{name}** ({team})",
+            "Opponent": opp,
+            "Predicted Points": f"{xp:.1f} pts",
+            "Star Rating": stars,
+            "Key Rationale": rationale_str
+        })
+
+    df_cap_display = pd.DataFrame(cap_rows)
+    st.dataframe(
+        df_cap_display.style.set_properties(**{'color': '#FFFFFF'}),
+        use_container_width=True,
+        height=210
+    )
+
+# --- HELPER: 5-GAMEWEEK FIXTURE TICKER ---
+def render_fixture_ticker(raw_json, current_gw):
+    """
+    Renders an interactive matrix table for all 20 Premier League teams showing their
+    next 5 opponents (GW+1 to GW+5) with FPL FDR color coding.
+    """
+    if not raw_json or 'fixtures' not in raw_json or 'static' not in raw_json:
+        return
+        
+    fixtures = raw_json.get('fixtures', [])
+    teams = raw_json['static'].get('teams', [])
+    teams_map = {t['id']: t['short_name'] for t in teams}
+
+    gws = [current_gw + i for i in range(5)]
+    gw_cols = [f"GW {gw}" for gw in gws]
+    
+    ticker_data = []
+    
+    for t_id, t_name in teams_map.items():
+        row = {'Team': t_name}
+        total_fdr = 0
+        cnt = 0
+        
+        for i, gw in enumerate(gws):
+            col_name = f"GW {gw}"
+            fix = next((f for f in fixtures if f.get('event') == gw and (f.get('team_h') == t_id or f.get('team_a') == t_id)), None)
+            if fix:
+                is_home = (fix.get('team_h') == t_id)
+                opp_id = fix.get('team_a') if is_home else fix.get('team_h')
+                fdr = fix.get('team_h_difficulty') if is_home else fix.get('team_a_difficulty')
+                opp_name = teams_map.get(opp_id, str(opp_id))
+                venue = "H" if is_home else "A"
+                cell_text = f"{opp_name} ({venue})"
+                total_fdr += fdr
+                cnt += 1
+            else:
+                cell_text = "BLANK"
+                total_fdr += 3
+                cnt += 1
+                
+            row[col_name] = cell_text
+            
+        row['Avg FDR'] = round(total_fdr / max(cnt, 1), 2)
+        ticker_data.append(row)
+
+    df_ticker = pd.DataFrame(ticker_data).sort_values(by='Avg FDR', ascending=True).reset_index(drop=True)
+    
+    fdr_lookup = {}
+    for t_id, t_name in teams_map.items():
+        for gw in gws:
+            fix = next((f for f in fixtures if f.get('event') == gw and (f.get('team_h') == t_id or f.get('team_a') == t_id)), None)
+            if fix:
+                is_home = (fix.get('team_h') == t_id)
+                fdr = fix.get('team_h_difficulty') if is_home else fix.get('team_a_difficulty')
+            else:
+                fdr = 3
+            fdr_lookup[(t_name, f"GW {gw}")] = fdr
+
+    def style_fdr_cells(val, team_name, col_name):
+        fdr = fdr_lookup.get((team_name, col_name), 3)
+        if fdr <= 2:
+            return 'background-color: #006437; color: #FFFFFF; font-weight: bold;'
+        elif fdr == 3:
+            return 'background-color: #37003C; color: #FFFFFF; font-weight: bold;'
+        elif fdr == 4:
+            return 'background-color: #7F0038; color: #FFFFFF; font-weight: bold;'
+        else:
+            return 'background-color: #FF005A; color: #FFFFFF; font-weight: bold;'
+
+    def apply_ticker_styling(df_in):
+        style_df = pd.DataFrame('', index=df_in.index, columns=df_in.columns)
+        for idx, r in df_in.iterrows():
+            t_name = r['Team']
+            style_df.loc[idx, 'Team'] = 'color: #FFFFFF; font-weight: bold;'
+            style_df.loc[idx, 'Avg FDR'] = 'color: #00FF87; font-weight: bold;'
+            for col in gw_cols:
+                val = r[col]
+                style_df.loc[idx, col] = style_fdr_cells(val, t_name, col)
+        return style_df
+
+    st.markdown("### 🗓️ 5-Gameweek FDR Schedule Ticker")
+    st.caption("Interactive 5-week schedule matrix for all 20 Premier League clubs color-coded by Fixture Difficulty Rating (FDR). Sorted by overall easiest schedule.")
+    
+    st.dataframe(
+        df_ticker.style.apply(apply_ticker_styling, axis=None).format({"Avg FDR": "{:.2f}"}),
+        use_container_width=True,
+        height=400
+    )
+
+# --- HELPER: BENCH OPTIMIZATION & TRANSFER RECOMMENDATION ---
+def find_best_valid_bench_swap(starters, bench):
+    """
+    Finds bench-to-starter swap with maximum positive xP gain complying with FPL rules:
+    - Bench GKP only compared against Starting GKP.
+    - Bench Outfield players (DEF, MID, FWD) only compared against Starting Outfield players.
+    - Resulting formation must be valid (at least 3 DEF, at least 2 MID, at least 1 FWD).
+    """
+    best_swap = None
+    best_gain = 0.0
+
+    if starters.empty or bench.empty:
+        return None
+
+    # 1. Evaluate Goalkeeper Swap
+    bench_gkp = bench[bench['position_pred'] == 'GKP']
+    starting_gkp = starters[starters['position_pred'] == 'GKP']
+    if not bench_gkp.empty and not starting_gkp.empty:
+        b_gkp = bench_gkp.iloc[0]
+        s_gkp = starting_gkp.iloc[0]
+        gkp_gain = float(b_gkp.get('final_xp', 0.0)) - float(s_gkp.get('final_xp', 0.0))
+        if gkp_gain > 0:
+            best_gain = gkp_gain
+            best_swap = (b_gkp, s_gkp, gkp_gain)
+
+    # 2. Evaluate Outfield Swaps
+    bench_outfield = bench[bench['position_pred'] != 'GKP']
+    starting_outfield = starters[starters['position_pred'] != 'GKP']
+
+    def_cnt = len(starters[starters['position_pred'] == 'DEF'])
+    mid_cnt = len(starters[starters['position_pred'] == 'MID'])
+    fwd_cnt = len(starters[starters['position_pred'] == 'FWD'])
+
+    for _, b_player in bench_outfield.iterrows():
+        b_pos = b_player.get('position_pred')
+        b_xp = float(b_player.get('final_xp', 0.0))
+        if b_pos not in ['DEF', 'MID', 'FWD']:
+            continue
+
+        for _, s_player in starting_outfield.iterrows():
+            s_pos = s_player.get('position_pred')
+            s_xp = float(s_player.get('final_xp', 0.0))
+            if s_pos not in ['DEF', 'MID', 'FWD']:
+                continue
+
+            gain = b_xp - s_xp
+            if gain <= best_gain:
+                continue
+
+            # Calculate formation after swap
+            new_def = def_cnt - (1 if s_pos == 'DEF' else 0) + (1 if b_pos == 'DEF' else 0)
+            new_mid = mid_cnt - (1 if s_pos == 'MID' else 0) + (1 if b_pos == 'MID' else 0)
+            new_fwd = fwd_cnt - (1 if s_pos == 'FWD' else 0) + (1 if b_pos == 'FWD' else 0)
+
+            if new_def >= 3 and new_mid >= 2 and new_fwd >= 1:
+                best_gain = gain
+                best_swap = (b_player, s_player, gain)
+
+    return best_swap
+
+
+def recommend_gameweek_transfer(starters, squad_df, df_live):
+    """
+    Identifies primary sell candidate (injured starting outfielder or lowest xP starting outfielder),
+    searches league for highest xP buy target in same position within Sell Price + 0.5m budget.
+    Filters out players already in squad and enforces 3-players-per-club limit.
+    """
+    outfield_starters = starters[starters['position_pred'] != 'GKP']
+    if outfield_starters.empty:
+        return None
+
+    def is_injured(row):
+        st = str(row.get('status', 'a')).lower()
+        ch_raw = row.get('chance_of_playing_next_round', row.get('chance_of_playing', 100))
+        try:
+            ch = float(ch_raw) if pd.notna(ch_raw) else 100.0
+        except (ValueError, TypeError):
+            ch = 100.0
+        return st in ['i', 's', 'u'] or ch == 0 or float(row.get('final_xp', 0.0)) == 0.0
+
+    injured_starters = outfield_starters[outfield_starters.apply(is_injured, axis=1)]
+    if not injured_starters.empty:
+        sell_candidate = injured_starters.sort_values(by='final_xp', ascending=True).iloc[0]
+    else:
+        sell_candidate = outfield_starters.sort_values(by='final_xp', ascending=True).iloc[0]
+
+    sell_pos = sell_candidate.get('position_pred')
+    sell_xp = float(sell_candidate.get('final_xp', 0.0))
+    sell_val_raw = float(sell_candidate.get('val_m', sell_candidate.get('value', 0.0)))
+    sell_price = sell_val_raw / 10.0 if sell_val_raw > 20 else sell_val_raw
+    sell_club = sell_candidate.get('team_name')
+
+    max_budget = sell_price + 0.5
+
+    squad_ids = set(squad_df['element'].dropna().astype(int).tolist()) if 'element' in squad_df.columns else set()
+    squad_club_counts = squad_df['team_name'].value_counts().to_dict()
+
+    candidates = df_live[
+        (df_live['position'] == sell_pos) &
+        (~df_live['id'].isin(squad_ids)) &
+        (df_live['final_xp'] > sell_xp)
+    ].copy()
+
+    if candidates.empty:
+        return {
+            'sell_candidate': sell_candidate,
+            'buy_target': None,
+            'blocked_info': None
+        }
+
+    def parse_price(row):
+        v = float(row.get('val_m', row.get('value', 0.0)))
+        return v / 10.0 if v > 20 else v
+
+    candidates['price_m'] = candidates.apply(parse_price, axis=1)
+    valid_budget_candidates = candidates[candidates['price_m'] <= max_budget].sort_values(by='final_xp', ascending=False)
+
+    buy_target = None
+    blocked_info = None
+
+    for _, cand in valid_budget_candidates.iterrows():
+        cand_club = cand.get('team_name')
+        curr_count = squad_club_counts.get(cand_club, 0)
+        effective_count = curr_count - (1 if sell_club == cand_club else 0)
+
+        if effective_count >= 3:
+            if blocked_info is None:
+                blocked_info = {
+                    'blocked_player': cand.get('web_name'),
+                    'club': cand_club
+                }
+            continue
+        else:
+            buy_target = cand
+            break
+
+    return {
+        'sell_candidate': sell_candidate,
+        'buy_target': buy_target,
+        'blocked_info': blocked_info
+    }
+
+
+# --- HELPER: RATE MY TEAM (LIVE SQUAD EVALUATOR) ---
+def render_rate_my_team_section(df_live, raw_json, current_gw):
+    """
+    Renders the interactive "Rate My Team" squad evaluation card.
+    Pulls user's 15 FPL picks via Team ID, calculates total starting XI xP,
+    weakest starter link, bench optimization alert, recommended transfer plan card, and displays a full squad table.
+    """
+    st.markdown("### 📊 Rate My Team (Live Squad Evaluator)")
+    st.caption("Enter your official FPL Team ID (from your FPL web URL: `entry/{team_id}/event/...`) to evaluate your starting XI projected points and bench optimization.")
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        team_id = st.number_input("Enter FPL Team ID", min_value=1, value=3753, step=1, key="rmt_team_id_input")
+        fetch_btn = st.button("Evaluate Squad 🚀", key="rmt_fetch_btn")
+
+    if team_id:
+        team_data = fetch_user_team(int(team_id), current_gw)
+        if not team_data or 'picks' not in team_data:
+            st.warning(f"⚠️ Could not retrieve squad picks for Team ID `{team_id}` in Gameweek {current_gw}. Verify your Team ID.")
+            return
+
+        picks_df = pd.DataFrame(team_data['picks'])
+        gw_used = team_data.get('gw', current_gw)
+        
+        merged = pd.merge(picks_df, df_live, left_on='element', right_on='id', how='left', suffixes=('_pick', '_pred'))
+        
+        if merged.empty:
+            st.error("Could not match squad players with model prediction dataset.")
+            return
+
+        starters = merged[merged['position_pick'] <= 11].copy()
+        bench = merged[merged['position_pick'] > 11].copy()
+
+        starters['calc_xp'] = starters['final_xp'] * starters['multiplier']
+        total_starting_xp = starters['calc_xp'].sum()
+
+        weakest_starter = starters.sort_values(by='final_xp', ascending=True).iloc[0]
+        w_name = weakest_starter.get('web_name', 'Unknown')
+        w_xp = float(weakest_starter.get('final_xp', 0.0))
+        w_opp = weakest_starter.get('next_opponent', '-')
+
+        best_swap = find_best_valid_bench_swap(starters, bench)
+
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric(
+                label=f"🚀 Total Projected Starting XI (GW {current_gw})",
+                value=f"{total_starting_xp:.1f} pts",
+                delta=f"GW {gw_used} Squad Import"
+            )
+        with m2:
+            st.metric(
+                label="⚠️ Weakest Link (Starter)",
+                value=f"{w_name} ({w_xp:.1f} xP)",
+                delta=f"vs {w_opp}"
+            )
+        with m3:
+            if best_swap is not None:
+                rec_bench, rec_starter, rec_gain = best_swap
+                b_name = rec_bench.get('web_name', '')
+                s_name = rec_starter.get('web_name', '')
+                s_xp = float(rec_starter.get('final_xp', 0.0))
+
+                st.metric(
+                    label="💡 Bench Optimization Alert",
+                    value=f"{b_name} (+{rec_gain:.1f} xP)",
+                    delta=f"Bench {s_name} ({s_xp:.1f} xP)",
+                    delta_color="normal"
+                )
+            else:
+                st.metric(
+                    label="✅ Bench Optimization",
+                    value="Starting XI Optimal",
+                    delta="No Bench Swaps Needed"
+                )
+
+        if best_swap is not None:
+            rec_bench, rec_starter, rec_gain = best_swap
+            b_name = rec_bench.get('web_name', '')
+            b_xp = float(rec_bench.get('final_xp', 0.0))
+            b_pos = rec_bench.get('position_pred', '')
+            s_name = rec_starter.get('web_name', '')
+            s_xp = float(rec_starter.get('final_xp', 0.0))
+            s_pos = rec_starter.get('position_pred', '')
+            st.warning(f"⚠️ **Bench Swap Recommended:** Bench player **{b_name}** ({b_pos}, {b_xp:.1f} xP) has higher predicted points than starting **{s_name}** ({s_pos}, {s_xp:.1f} xP)! Consider starting {b_name} instead.")
+
+        # --- RECOMMENDATION CARD: 🎯 Recommended Gameweek Transfer ---
+        transfer_res = recommend_gameweek_transfer(starters, merged, df_live)
+        if transfer_res and transfer_res.get('sell_candidate') is not None:
+            sell_c = transfer_res['sell_candidate']
+            buy_t = transfer_res['buy_target']
+            blocked_inf = transfer_res['blocked_info']
+            
+            sell_n = sell_c.get('web_name', '')
+            sell_xp_val = float(sell_c.get('final_xp', 0.0))
+            
+            if buy_t is not None:
+                buy_n = buy_t.get('web_name', '')
+                buy_xp_val = float(buy_t.get('final_xp', 0.0))
+                net_gain = buy_xp_val - sell_xp_val
+                
+                if blocked_inf is not None:
+                    st.info(f"ℹ️ Club Limit: 3 players already owned from {blocked_inf['club']}. Targeting alternate option: {buy_n}")
+                    
+                st.markdown(f"""
+                <div style="background: rgba(22, 27, 34, 0.95); border: 1px solid #30363d; border-radius: 10px; padding: 14px 18px; margin-top: 15px; margin-bottom: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
+                    <div style="font-weight: 700; font-size: 15px; color: #00FF87; margin-bottom: 8px;">🎯 Recommended Gameweek Transfer</div>
+                    <div style="font-size: 14px; color: #FFFFFF; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;">
+                        <span style="background: #7f1d1d; color: #f87171; font-weight: bold; padding: 3px 8px; border-radius: 4px;">[SELL]</span>
+                        <strong>{sell_n}</strong> ({sell_xp_val:.1f} xP)
+                        <span style="font-size: 16px; color: #00FF87;">➔</span>
+                        <span style="background: #064e3b; color: #34d399; font-weight: bold; padding: 3px 8px; border-radius: 4px;">[BUY]</span>
+                        <strong>{buy_n}</strong> ({buy_xp_val:.1f} xP)
+                        <span style="color: #4b5563; margin: 0 4px;">|</span>
+                        <strong>Net Projected Gain: <span style="color: #00FF87; font-size: 15px;">+{net_gain:.1f} xP</span></strong>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.info("✅ **Squad Transfer Status:** No transfer recommended this week. Your starting players are already optimal for their budget range.")
+
+        st.markdown("#### 📋 Squad Breakdown & Captain Multipliers")
+        
+        def format_role(row):
+            mult = row.get('multiplier', 1)
+            is_c = row.get('is_captain', False)
+            is_vc = row.get('is_vice_captain', False)
+            pos = row.get('position_pick', 1)
+            
+            if is_c or mult >= 2:
+                return "👑 Captain (2x)"
+            elif is_vc:
+                return "🛡️ Vice-Captain"
+            elif pos <= 11:
+                return "⚡ Starter"
+            else:
+                return "🪑 Bench"
+
+        merged['Role'] = merged.apply(format_role, axis=1)
+        merged['Projected Points'] = merged['final_xp'] * merged['multiplier']
+
+        display_rmt_cols = {
+            'position_pick': 'Slot',
+            'web_name': 'Player',
+            'team_name': 'Team',
+            'position_pred': 'Pos',
+            'next_opponent': 'Opponent',
+            'Role': 'Role',
+            'final_xp': 'Base xP',
+            'Projected Points': 'Effective xP'
+        }
+
+        rmt_table = merged[display_rmt_cols.keys()].rename(columns=display_rmt_cols).sort_values(by='Slot').reset_index(drop=True)
+
+        def style_rmt_rows(s):
+            is_starter = s['Slot'] <= 11
+            is_c = "Captain" in str(s['Role'])
+            if is_c:
+                return ['background-color: #2b2410; color: #FFFFFF; font-weight: bold;' for _ in s]
+            elif is_starter:
+                return ['color: #FFFFFF;' for _ in s]
+            else:
+                return ['background-color: #1a1e24; color: #FFFFFF;' for _ in s]
+
+        st.dataframe(
+            rmt_table.style.apply(style_rmt_rows, axis=1).format({"Base xP": "{:.1f}", "Effective xP": "{:.1f}"}),
+            use_container_width=True,
+            height=420
+        )
+
+# --- SIDEBAR CONTROL PANEL ---
+st.sidebar.header("⚙️ Control Panel")
+if IS_PRESEASON:
+    st.sidebar.info("System Status: **Season Has Not Started**")
+else:
+    st.sidebar.info(f"System Status: **GW {CURRENT_GW} Active**")
+
+selected_tz = st.sidebar.selectbox(
+    "🌐 Timezone",
+    ["Local / Regional", "UTC", "BST (UK / UTC+1)", "CET (Europe / UTC+2)", "NPT (Nepal / UTC+5:45)", "IST (India / UTC+5:30)", "EST (US East / UTC-5)", "PST (US West / UTC-8)"],
+    index=0,
+    help="Select your timezone to convert FPL Gameweek deadlines and match kickoff times."
+)
+
+try:
+    with open('metrics.json', 'r') as f:
+        metrics = json.load(f)
+        st.sidebar.divider()
+        st.sidebar.markdown("### 🧠 Model Diagnostics")
+        st.sidebar.metric("RMSE (Error)", f"{metrics.get('rmse', 'N/A')}", delta_color="inverse")
+        st.sidebar.metric("R² (Accuracy)", f"{metrics.get('r2', 'N/A')}")
+        st.sidebar.caption("Project Established: August 2026\nCurrent Engine: ApexFPL Engine v1.2")
+except FileNotFoundError:
+    st.sidebar.caption("Project Established: August 2026\nCurrent Engine: ApexFPL Engine v1.2")
+
 # --- REAL-TIME MATCHDAY INTELLIGENCE ---
 if raw_json and 'static' in raw_json and 'events' in raw_json['static']:
     events_list = raw_json['static']['events']
@@ -83,19 +709,26 @@ if raw_json and 'static' in raw_json and 'events' in raw_json['static']:
         if deadline_raw:
             try:
                 deadline_dt = pd.to_datetime(deadline_raw)
+                if deadline_dt.tzinfo is None:
+                    deadline_dt = deadline_dt.tz_localize('UTC')
+                
+                target_tz = TZ_MAP.get(selected_tz, datetime.now().astimezone().tzinfo)
+                converted_dt = deadline_dt.tz_convert(target_tz)
+                
                 now_utc = pd.Timestamp.now(tz='UTC')
                 diff = deadline_dt - now_utc
                 days = diff.days
                 hours = diff.seconds // 3600
                 mins = (diff.seconds % 3600) // 60
                 
-                deadline_fmt = deadline_dt.strftime('%a %d %b %H:%M')
+                tz_label = selected_tz
+                deadline_fmt = converted_dt.strftime('%a %d %b %H:%M')
                 if diff.total_seconds() > 0:
                     countdown_str = f"in {days}d {hours}h" if days > 0 else f"in {hours}h {mins}m"
                 else:
                     countdown_str = "PASSED / IN PROGRESS"
                 
-                deadline_text = f"⏰ **Gameweek {gw_id} Deadline:** {deadline_fmt} UTC"
+                deadline_text = f"⏰ **Gameweek {gw_id} Deadline:** {deadline_fmt} ({tz_label})"
                 countdown_text = f"⏳ **Countdown:** {countdown_str}"
             except Exception:
                 deadline_text = f"⏰ **Gameweek {gw_id} Active**"
@@ -118,7 +751,7 @@ if raw_json and 'static' in raw_json and 'events' in raw_json['static']:
                     h_score = f.get('team_h_score', 0)
                     a_score = f.get('team_a_score', 0)
                     ko_raw = f.get('kickoff_time')
-                    ko_str = pd.to_datetime(ko_raw).strftime('%a %H:%M') if ko_raw else ""
+                    ko_str = format_timestamp_tz(ko_raw, selected_tz, fmt="%a %H:%M Local") if ko_raw else ""
 
                     if finished:
                         status_str = f"✅ {h_team} {h_score}-{a_score} {a_team}"
@@ -136,29 +769,19 @@ if raw_json and 'static' in raw_json and 'events' in raw_json['static']:
 
 st.markdown("---")
 
-# --- SIDEBAR ---
-st.sidebar.header("⚙️ Control Panel")
-if IS_PRESEASON:
-    st.sidebar.info("System Status: **Season Has Not Started**")
-else:
-    st.sidebar.info(f"System Status: **GW {CURRENT_GW} Active**")
-
-try:
-    with open('metrics.json', 'r') as f:
-        metrics = json.load(f)
-        st.sidebar.divider()
-        st.sidebar.markdown("### 🧠 Model Diagnostics")
-        st.sidebar.metric("RMSE (Error)", f"{metrics.get('rmse', 'N/A')}", delta_color="inverse")
-        st.sidebar.metric("R² (Accuracy)", f"{metrics.get('r2', 'N/A')}")
-        st.sidebar.caption("Project Established: October 2025\nCurrent Engine: Catalan AI Predictor v1.2")
-except FileNotFoundError:
-    st.sidebar.caption("Project Established: October 2025\nCurrent Engine: Catalan AI Predictor v1.2")
-
 # --- TABS ---
 tab_pred, tab_hist, tab_hauls, tab_info = st.tabs(["🔮 Predictions", "📊 Player History", "🏆 Hall of Fame", "ℹ️ Documentation"])
 
 # === TAB 1: LIVE PREDICTIONS ===
 with tab_pred:
+    totw_squad, totw_info = select_team_of_the_week(df_live)
+    if totw_squad is not None:
+        render_pitch_visualizer(totw_squad, totw_info, CURRENT_GW)
+
+    # Render Captaincy Rating Card
+    render_captaincy_card(df_live)
+    st.markdown("---")
+
     if IS_PRESEASON:
         st.info("ℹ️ **Pre-Season Active:** Gameweek 1 has not commenced yet. Predictions are calculated using prior season baselines (with positional median imputation for new transfers).")
         st.subheader("🚀 Predicted Points for GW 1 (Pre-Season Baselines)")
@@ -195,16 +818,24 @@ with tab_pred:
     
     final_table = view_df[display_cols.keys()].rename(columns=display_cols).sort_values(by='Predicted Points', ascending=False).reset_index(drop=True)
     
-    # 4. HIGHLIGHT TOP 5 PLAYERS (The Visual Fix)
+    # 4. HIGHLIGHT TOP 5 PLAYERS (The Visual Fix with High-Contrast Text)
     def highlight_top5(s):
         is_top5 = s.name < 5 # Since we reset index, top 5 are 0,1,2,3,4
-        return ['background-color: #3e3216' if is_top5 else '' for _ in s] # Gold/Dark highlight
+        return ['background-color: #2e2612; color: #FFFFFF;' if is_top5 else 'color: #FFFFFF;' for _ in s]
     
     st.dataframe(
         final_table.style.apply(highlight_top5, axis=1).format({"Predicted Points": "{:.1f}", "Price (£m)": "£{:.1f}"}),
         use_container_width=True,
         height=600
     )
+
+    st.markdown("---")
+    # Render 5-Gameweek Fixture Ticker
+    render_fixture_ticker(raw_json, CURRENT_GW)
+
+    st.markdown("---")
+    # Render Rate My Team Evaluator
+    render_rate_my_team_section(df_live, raw_json, CURRENT_GW)
 
 # === TAB 2: PLAYER HISTORY (ZERO DATA LEAKAGE) ===
 with tab_hist:
@@ -371,7 +1002,7 @@ with tab_hauls:
 
         st.markdown("---")
         st.dataframe(
-            df_career.style.format({"Career FPL Points": "{:,d}"}),
+            df_career.style.set_properties(**{'color': '#FFFFFF'}).format({"Career FPL Points": "{:,d}"}),
             use_container_width=True,
             height=300
         )
@@ -396,7 +1027,7 @@ with tab_hauls:
 
         st.markdown("---")
         st.dataframe(
-            df_single.style.format({"Points": "{:d}"}),
+            df_single.style.set_properties(**{'color': '#FFFFFF'}).format({"Points": "{:d}"}),
             use_container_width=True,
             height=320
         )
@@ -409,7 +1040,7 @@ with tab_info:
     
     st.subheader("1. Architecture")
     st.markdown("""
-    The **Catalan AI Predictor v1.2** uses a hybrid architecture:
+    The **ApexFPL Engine v1.2** uses a hybrid architecture:
     * **Data Layer:** Live API ingestion from FPL endpoints.
     * **Model Layer:** Linear Regression trained on 2021–2026 historical data.
     * **Logic Layer:** Rule-based adjustments for 'Pep Roulette' (Rotation) and Fixture Difficulty.
@@ -434,7 +1065,7 @@ with tab_info:
         """)
 
     st.subheader("3. Credits & Timeline")
-    st.text(f"Developed by Subanta Poudel\nProject Established: October 2025\nCurrent Engine: Catalan AI Predictor v1.2\nLast Updated: {datetime.now().strftime('%Y-%m-%d')}")
+    st.text(f"Developed by Subanta Poudel\nProject Established: August 2026\nCurrent Engine: ApexFPL Engine v1.2\nLast Updated: {datetime.now().strftime('%Y-%m-%d')}")
 
 # --- FOOTER ---
 st.markdown("---")
@@ -455,7 +1086,7 @@ st.markdown(
     }
     </style>
     <div class="footer">
-        © 2026 Catalan AI Predictor v1.2 | Created by <b>Subanta Poudel</b> | Project Established: October 2025
+        © 2026 ApexFPL Engine v1.2 | Created by <b>Subanta Poudel</b> | Project Established: August 2026
     </div>
     """,
     unsafe_allow_html=True

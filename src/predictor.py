@@ -35,7 +35,7 @@ def make_predictions(df, model, is_preseason=False):
     
     # Calculate active senior midfielders/attackers above average squad cost (val_m >= 5.5m)
     active_mask = (df['val_m'] >= 5.5) & (status_series.isin(['a', 'd']))
-    attacker_counts = df[active_mask & df['position'].isin(['MID', 'FWD'])].groupby('team_name')['id'].count()
+    attacker_counts = df[active_mask & df['position'].isin(['MID', 'FWD'])].groupby('team_name')['team_name'].count()
     # Clubs with dense positional competition (5+ active senior attackers above average cost) are flagged
     deep_squad_teams = set(attacker_counts[attacker_counts >= 5].index)
     
@@ -59,30 +59,34 @@ def make_predictions(df, model, is_preseason=False):
         raw_val = float(row.get('raw_xp', 0)) if pd.notna(row.get('raw_xp')) else 0.0
         ai_points = max(0.0, raw_val)
         
-        # B. Fixture Difficulty Adjustments
+        # B. Fixture Difficulty Adjustments (Rebalanced)
         diff = float(row.get('next_match_difficulty', 3)) if pd.notna(row.get('next_match_difficulty')) else 3.0
         fixture_bonus = 0.0
         if diff == 1:
-            fixture_bonus = 2.5     # vs Relegation fodder
+            fixture_bonus = 1.25    # vs Relegation fodder
         elif diff == 2:
-            fixture_bonus = 1.5   # vs Weak team
+            fixture_bonus = 0.75    # vs Weak team
         elif diff == 4:
-            fixture_bonus = -0.5  # vs Strong team
+            fixture_bonus = -0.5    # vs Strong team
         elif diff == 5:
-            fixture_bonus = -1.0  # vs Title contender
+            fixture_bonus = -0.75   # vs Title contender
         
-        # C. Premium Captain Boost
+        # C. Premium Attacker & Captain Boost
         val_m = float(row.get('val_m', 0)) if pd.notna(row.get('val_m')) else 0.0
-        star_bonus = 0.0
-        if val_m > 10.0 and diff <= 3:
-            star_bonus = 1.5
+        premium_mult = 1.0
+        if val_m >= 10.0 and row.get('position') in ['MID', 'FWD']:
+            premium_mult = 1.15
             
-        subtotal = ai_points + fixture_bonus + star_bonus
+        star_bonus = 0.0
+        if val_m >= 10.0 and diff <= 3:
+            star_bonus = 1.0
+            
+        subtotal = (ai_points + fixture_bonus) * premium_mult + star_bonus
         
-        # D. Clean Sheet Boost
+        # D. Clean Sheet Boost (Reduced to +0.5 for DEF/GKP on easy fixtures FDR <= 2)
         cs_bonus = 0.0
         if row.get('position') in ['DEF', 'GKP'] and diff <= 2:
-            cs_bonus = 1.0
+            cs_bonus = 0.5
             subtotal += cs_bonus
             
         # E. Dynamic Squad Depth Rotation Risk (Sprint 3)
@@ -108,9 +112,11 @@ def make_predictions(df, model, is_preseason=False):
         parts = []
         parts.append(f"{ai_points:.1f} (base xP)")
         if fixture_bonus > 0:
-            parts.append(f"+ {fixture_bonus:.1f} (easy fixture)")
+            parts.append(f"+ {fixture_bonus:.2f} (easy fixture)")
         elif fixture_bonus < 0:
-            parts.append(f"- {abs(fixture_bonus):.1f} (tough fixture)")
+            parts.append(f"- {abs(fixture_bonus):.2f} (tough fixture)")
+        if premium_mult > 1.0:
+            parts.append(f"x {premium_mult:.2f} (premium attacker form)")
         if star_bonus > 0:
             parts.append(f"+ {star_bonus:.1f} (star captain)")
         if cs_bonus > 0:

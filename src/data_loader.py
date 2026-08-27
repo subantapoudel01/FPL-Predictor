@@ -115,3 +115,68 @@ def fetch_player_live_summary(player_id):
         return None
     except requests.RequestException:
         return None
+
+def fetch_user_team(team_id, current_gw):
+    """
+    Fetches the live 15-player squad picks for a given FPL Team ID.
+    Queries event/{current_gw}/picks/ and falls back to prior gameweeks if unreleased.
+    
+    Args:
+        team_id (int): FPL entry/manager ID
+        current_gw (int): Current or upcoming target gameweek
+        
+    Returns:
+        dict: Contains 'gw', 'picks' (15 player dicts), and 'active_chip', or None if unavailable.
+    """
+    if not team_id or team_id < 1:
+        return None
+        
+    gws_to_try = [current_gw] + [gw for gw in range(current_gw - 1, 0, -1)]
+    
+    for gw in gws_to_try:
+        url = f"{API_BASE_URL}/entry/{team_id}/event/{gw}/picks/"
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                if 'picks' in data and len(data['picks']) > 0:
+                    return {
+                        'gw': gw,
+                        'active_chip': data.get('active_chip'),
+                        'picks': data['picks']
+                    }
+        except requests.RequestException:
+            continue
+            
+    return None
+
+# --- TIMEZONE CONVERSION UTILITIES ---
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+TZ_MAP = {
+    "Local / Regional": datetime.now().astimezone().tzinfo,
+    "UTC": ZoneInfo("UTC"),
+    "BST (UK / UTC+1)": ZoneInfo("Europe/London"),
+    "CET (Europe / UTC+2)": ZoneInfo("Europe/Paris"),
+    "NPT (Nepal / UTC+5:45)": ZoneInfo("Asia/Kathmandu"),
+    "IST (India / UTC+5:30)": ZoneInfo("Asia/Kolkata"),
+    "EST (US East / UTC-5)": ZoneInfo("America/New_York"),
+    "PST (US West / UTC-8)": ZoneInfo("America/Los_Angeles")
+}
+
+def format_timestamp_tz(ts_str, tz_name="Local / Regional", fmt="%a %H:%M Local"):
+    """
+    Converts a UTC ISO timestamp string to target timezone and formats it.
+    """
+    if not ts_str:
+        return ""
+    try:
+        dt = pd.to_datetime(ts_str)
+        if dt.tzinfo is None:
+            dt = dt.tz_localize('UTC')
+        target_tz = TZ_MAP.get(tz_name, datetime.now().astimezone().tzinfo)
+        converted = dt.tz_convert(target_tz)
+        return converted.strftime(fmt)
+    except Exception:
+        return str(ts_str)
