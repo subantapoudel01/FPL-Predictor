@@ -1,8 +1,9 @@
 [theme]
-primaryColor = "#00FF87"
-backgroundColor = "#0E1117"
-secondaryBackgroundColor = "#161B22"
-textColor = "#FFFFFF"
+# Blaugrana — navy ground, garnet accent, gold reserved for captain/star emphasis in app.py
+primaryColor = "#D64B5E"
+backgroundColor = "#0F1420"
+secondaryBackgroundColor = "#1A2235"
+textColor = "#F2F4F8"
 
 [browser]
 gatherUsageStats = false

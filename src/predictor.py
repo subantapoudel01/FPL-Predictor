@@ -88,7 +88,27 @@ def make_predictions(df, model, is_preseason=False):
         if row.get('position') in ['DEF', 'GKP'] and diff <= 2:
             cs_bonus = 0.5
             subtotal += cs_bonus
-            
+
+        # D2. Defensive Contribution (DEFCON) — 2025-26 scoring rule.
+        # DEF/GKP earn 2 pts for combined CBIT (clearances+blocks+interceptions+tackles) >= 10/match.
+        # MID/FWD earn 2 pts for combined CBIRT (+ recoveries) >= 12/match.
+        # `defensive_contribution_per_90` is FPL's own season rate for that exact combined
+        # count — verified directly against its raw components, not an approximation.
+        # No match-by-match variance is available, so this is a stepped heuristic against
+        # the season rate vs. threshold, consistent with the rest of this rule layer.
+        defcon_bonus = 0.0
+        dc_rate = float(row.get('defensive_contribution_per_90', 0.0)) if pd.notna(row.get('defensive_contribution_per_90')) else 0.0
+        dc_threshold = 10.0 if row.get('position') in ['DEF', 'GKP'] else 12.0
+        dc_ratio = dc_rate / dc_threshold if dc_threshold else 0.0
+        if dc_ratio >= 1.0:
+            defcon_bonus = 2.0      # Regularly clears the threshold most matches
+        elif dc_ratio >= 0.75:
+            defcon_bonus = 1.0      # Frequently close to / over the threshold
+        elif dc_ratio >= 0.5:
+            defcon_bonus = 0.4      # Occasional DEFCON returns
+        if defcon_bonus > 0:
+            subtotal += defcon_bonus
+
         # E. Dynamic Squad Depth Rotation Risk (Sprint 3)
         # Apply proportional rotation haircut only to non-guaranteed starters on high-competition squads
         starter_prob = float(row.get('starter_prob', 100)) if pd.notna(row.get('starter_prob')) else 100.0
@@ -121,6 +141,8 @@ def make_predictions(df, model, is_preseason=False):
             parts.append(f"+ {star_bonus:.1f} (star captain)")
         if cs_bonus > 0:
             parts.append(f"+ {cs_bonus:.1f} (clean sheet)")
+        if defcon_bonus > 0:
+            parts.append(f"+ {defcon_bonus:.1f} (DEFCON)")
         if rotation_tax > 0:
             parts.append(f"- {rotation_tax:.1f} (Squad depth rotation risk)")
         if rotation_factor < 1.0 and rotation_factor > 0:

@@ -29,7 +29,9 @@ def fetch_api_data():
         element_keys = [
             'id', 'code', 'first_name', 'second_name', 'web_name', 'element_type',
             'team', 'now_cost', 'minutes', 'form', 'ict_index', 'creativity',
-            'influence', 'threat', 'chance_of_playing_next_round', 'chance_of_playing', 'status'
+            'influence', 'threat', 'chance_of_playing_next_round', 'chance_of_playing', 'status',
+            'defensive_contribution_per_90',
+            'bonus', 'bps', 'cost_change_event', 'selected_by_percent'
         ]
         for elem in static_data.get('elements', []):
             trimmed_elements.append({k: elem.get(k) for k in element_keys if k in elem})

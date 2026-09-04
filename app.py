@@ -3,6 +3,8 @@ import pandas as pd
 import json
 import numpy as np
 import plotly.express as px
+import re
+from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -11,22 +13,19 @@ from src.data_loader import fetch_api_data, fetch_gameweek_history, fetch_player
 from src.features import process_data, fetch_full_history
 from src.predictor import load_model, make_predictions
 
-# --- APP CONFIGURATION ---
-st.set_page_config(
-    page_title="ApexFPL — FPL Predictor", 
-    layout="wide", 
-    page_icon="⚡"
-)
+def render_html(html):
+    """
+    Renders a raw HTML/CSS block via st.markdown(unsafe_allow_html=True) safely.
 
-# --- HEADER  ---
-st.title("⚡ ApexFPL Predictor")
-st.markdown("**Created by Subanta Poudel** | *Hybrid Intelligence Expected Points (xP) Engine*")
-st.caption("Project Established: August 2026 | Current Engine: ApexFPL Engine v1.2")
-st.markdown("---")
-
-from pathlib import Path
-
-import re
+    Streamlit's markdown parser runs CommonMark first: any line indented 4+
+    spaces is treated as a preformatted code block and printed as literal
+    text instead of being parsed as HTML. Python f-strings built inside
+    indented functions inherit that source indentation, which is exactly
+    what caused the raw CSS/HTML to leak onto the page as visible text.
+    Stripping leading whitespace per line (line breaks don't affect HTML
+    rendering) removes the whole class of bug at a single call site.
+    """
+    st.markdown("\n".join(line.strip() for line in html.strip().splitlines()), unsafe_allow_html=True)
 
 def sanitize_search_input(query):
     """
@@ -36,6 +35,77 @@ def sanitize_search_input(query):
     if not isinstance(query, str) or not query:
         return ""
     return re.sub(r'[^a-zA-Z0-9\s]', '', query).strip()
+
+# --- APP CONFIGURATION ---
+st.set_page_config(
+    page_title="CatalanPlays",
+    layout="wide",
+    page_icon="⚽"
+)
+
+# --- TYPOGRAPHY ---
+# Big Shoulders Display: condensed sporting/scoreboard energy, used sparingly
+# on headings only. Source Sans 3: body/UI text. IBM Plex Mono: anything
+# numeric (xP, BPS, price, RMSE/R²) so stat columns line up and read as
+# data, not prose. Streamlit's own emotion-generated classes carry higher
+# specificity than a plain selector, so the font-family overrides need
+# !important to reliably win — this is fighting a third-party framework's
+# scoped CSS, not our own cascade.
+# Known limitation: st.dataframe renders cells to an HTML canvas (glide-data-
+# grid), so these rules cannot reach text *inside* a dataframe grid — only
+# Streamlit's own UI chrome (headings, sidebar, metrics, buttons, captions).
+render_html("""
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Source+Sans+3:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+    --font-display: 'Big Shoulders Display', 'Arial Narrow', sans-serif;
+    --font-body: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+}
+html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"],
+.stMarkdown, p, div, label, li, button {
+    font-family: var(--font-body) !important;
+}
+/* Deliberately NOT touching `span`: Streamlit renders its icon glyphs
+   (expander chevrons, toolbar icons) as ligature text inside spans keyed
+   to a dedicated icon font — a blanket font-family override there replaces
+   the icon font and the glyph shows as its literal name ("arrow_right")
+   instead of rendering. Body text still gets Source Sans 3 through normal
+   CSS inheritance from `body` above; only the icon spans need to opt out. */
+h1 {
+    font-family: var(--font-display) !important;
+    font-weight: 800 !important;
+    letter-spacing: .2px;
+}
+h2 {
+    font-family: var(--font-display) !important;
+    font-weight: 700 !important;
+}
+h3, h4 {
+    font-family: var(--font-display) !important;
+    font-weight: 600 !important;
+}
+[data-testid="stMetricValue"] {
+    font-family: var(--font-mono) !important;
+    font-weight: 600 !important;
+}
+[data-testid="stMetricLabel"] {
+    font-family: var(--font-body) !important;
+    font-weight: 600 !important;
+}
+code, pre, .stCodeBlock {
+    font-family: var(--font-mono) !important;
+}
+</style>
+""")
+
+# --- HEADER  ---
+st.title("⚽ CatalanPlays")
+st.markdown("**Created by Subanta Poudel** | *Hybrid Intelligence Expected Points (xP) Engine*")
+st.caption("Project Established: August 2026 | Current Engine: CatalanPlays Engine v1.2")
+st.markdown("---")
 
 # --- DATA INGESTION LAYER ---
 @st.cache_data(ttl=3600)
@@ -161,15 +231,15 @@ def render_pitch_visualizer(totw_df, totw_info, gameweek):
         
         badge_html = ""
         if name == captain_name:
-            badge_html = '<span style="background:#FFD700; color:#000; font-weight:bold; padding:1px 4px; border-radius:3px; font-size:10px; margin-left:3px;">(C)</span>'
+            badge_html = '<span style="background:#FFC72C; color:#1A1408; font-weight:bold; padding:1px 4px; border-radius:3px; font-size:10px; margin-left:3px;">(C)</span>'
         elif name == vice_name:
-            badge_html = '<span style="background:#C0C0C0; color:#000; font-weight:bold; padding:1px 4px; border-radius:3px; font-size:10px; margin-left:3px;">(V)</span>'
-            
+            badge_html = '<span style="background:#C0C0C0; color:#1A1408; font-weight:bold; padding:1px 4px; border-radius:3px; font-size:10px; margin-left:3px;">(V)</span>'
+
         return f'''
-        <div style="background: rgba(22, 27, 34, 0.95); border: 1px solid #30363d; border-radius: 8px; padding: 6px 4px; text-align: center; flex: 1 1 70px; max-width: 95px; min-width: 65px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); box-sizing: border-box;">
-            <div style="font-weight: 700; font-size: 12px; color: #FFFFFF; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{name}{badge_html}</div>
-            <div style="font-size: 10px; color: #FFFFFF; opacity: 0.85; margin-top: 2px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{team} · {opp}</div>
-            <div style="font-size: 12px; font-weight: 700; color: #FFFFFF; margin-top: 4px;">{xp:.1f} xP</div>
+        <div style="background: rgba(26, 34, 53, 0.95); border: 1px solid #2A3450; border-radius: 8px; padding: 6px 4px; text-align: center; flex: 1 1 70px; max-width: 95px; min-width: 65px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); box-sizing: border-box;">
+            <div style="font-weight: 700; font-size: 12px; color: #F2F4F8; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{name}{badge_html}</div>
+            <div style="font-size: 10px; color: #8891A6; margin-top: 2px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{team} · {opp}</div>
+            <div style="font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: #D64B5E; margin-top: 4px;">{xp:.1f} xP</div>
         </div>
         '''
 
@@ -183,10 +253,10 @@ def render_pitch_visualizer(totw_df, totw_info, gameweek):
     gkp_row = row_html(gkps)
 
     pitch_html = f'''
-    <div style="background: linear-gradient(180deg, #163e23 0%, #112d19 100%); border: 2px solid #2e7d45; border-radius: 12px; padding: 18px 12px; margin-bottom: 25px; box-shadow: inset 0 0 40px rgba(0,0,0,0.6); position: relative;">
+    <div style="background: linear-gradient(180deg, #16233B 0%, #0F1420 100%); border: 2px solid #D64B5E; border-radius: 12px; padding: 18px 12px; margin-bottom: 25px; box-shadow: inset 0 0 40px rgba(0,0,0,0.6); position: relative;">
         <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 8px; margin-bottom: 12px; flex-wrap: wrap; gap: 6px;">
-            <div style="font-weight: 700; font-size: 16px; color: #00FF87;">⭐ AI Team of the Week — GW {gameweek}</div>
-            <div style="font-size: 13px; color: #FFFFFF;">Formation: <strong>{formation}</strong> | Squad xP: <strong style="color:#00FF87;">{total_xp:.1f} pts</strong></div>
+            <div style="font-family: var(--font-display); font-weight: 700; font-size: 18px; color: #FFC72C;">⭐ AI Team of the Week — GW {gameweek}</div>
+            <div style="font-size: 13px; color: #F2F4F8;">Formation: <strong>{formation}</strong> | Squad xP: <strong style="font-family: var(--font-mono); color:#FFC72C;">{total_xp:.1f} pts</strong></div>
         </div>
         {fwd_row}
         {mid_row}
@@ -194,7 +264,7 @@ def render_pitch_visualizer(totw_df, totw_info, gameweek):
         {gkp_row}
     </div>
     '''
-    st.markdown(pitch_html, unsafe_allow_html=True)
+    render_html(pitch_html)
 
 # --- HELPER: CAPTAINCY RATING CARD ---
 def render_captaincy_card(df_candidates):
@@ -252,16 +322,22 @@ def render_captaincy_card(df_candidates):
 
         cap_rows.append({
             "Rank": idx + 1,
-            "Player": f"**{name}** ({team})",
+            "Player": f"{name} ({team})",
             "Opponent": opp,
             "Predicted Points": f"{xp:.1f} pts",
             "Star Rating": stars,
             "Key Rationale": rationale_str
         })
 
+    # Note: st.dataframe never interprets markdown syntax inside cell text
+    # (that's a st.markdown/st.write-only behavior) — "**bold**" would show
+    # as literal asterisks. Real emphasis on this column has to come from
+    # the Styler's CSS properties instead.
     df_cap_display = pd.DataFrame(cap_rows)
     st.dataframe(
-        df_cap_display.style.set_properties(**{'color': '#FFFFFF'}),
+        df_cap_display.style
+            .set_properties(**{'color': '#F2F4F8'})
+            .set_properties(subset=['Player'], **{'font-weight': '700'}),
         use_container_width=True,
         height=210
     )
@@ -339,8 +415,8 @@ def render_fixture_ticker(raw_json, current_gw):
         style_df = pd.DataFrame('', index=df_in.index, columns=df_in.columns)
         for idx, r in df_in.iterrows():
             t_name = r['Team']
-            style_df.loc[idx, 'Team'] = 'color: #FFFFFF; font-weight: bold;'
-            style_df.loc[idx, 'Avg FDR'] = 'color: #00FF87; font-weight: bold;'
+            style_df.loc[idx, 'Team'] = 'color: #F2F4F8; font-weight: bold;'
+            style_df.loc[idx, 'Avg FDR'] = 'color: #FFC72C; font-weight: bold;'
             for col in gw_cols:
                 val = r[col]
                 style_df.loc[idx, col] = style_fdr_cells(val, t_name, col)
@@ -602,20 +678,20 @@ def render_rate_my_team_section(df_live, raw_json, current_gw):
                 if blocked_inf is not None:
                     st.info(f"ℹ️ Club Limit: 3 players already owned from {blocked_inf['club']}. Targeting alternate option: {buy_n}")
                     
-                st.markdown(f"""
-                <div style="background: rgba(22, 27, 34, 0.95); border: 1px solid #30363d; border-radius: 10px; padding: 14px 18px; margin-top: 15px; margin-bottom: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
-                    <div style="font-weight: 700; font-size: 15px; color: #00FF87; margin-bottom: 8px;">🎯 Recommended Gameweek Transfer</div>
-                    <div style="font-size: 14px; color: #FFFFFF; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;">
+                render_html(f"""
+                <div style="background: rgba(26, 34, 53, 0.95); border: 1px solid #2A3450; border-radius: 10px; padding: 14px 18px; margin-top: 15px; margin-bottom: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
+                    <div style="font-family: var(--font-display); font-weight: 700; font-size: 17px; color: #FFC72C; margin-bottom: 8px;">🎯 Recommended Gameweek Transfer</div>
+                    <div style="font-size: 14px; color: #F2F4F8; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <span style="background: #7f1d1d; color: #f87171; font-weight: bold; padding: 3px 8px; border-radius: 4px;">[SELL]</span>
-                        <strong>{sell_n}</strong> ({sell_xp_val:.1f} xP)
-                        <span style="font-size: 16px; color: #00FF87;">➔</span>
+                        <strong>{sell_n}</strong> <span style="font-family: var(--font-mono);">({sell_xp_val:.1f} xP)</span>
+                        <span style="font-size: 16px; color: #FFC72C;">➔</span>
                         <span style="background: #064e3b; color: #34d399; font-weight: bold; padding: 3px 8px; border-radius: 4px;">[BUY]</span>
-                        <strong>{buy_n}</strong> ({buy_xp_val:.1f} xP)
-                        <span style="color: #4b5563; margin: 0 4px;">|</span>
-                        <strong>Net Projected Gain: <span style="color: #00FF87; font-size: 15px;">+{net_gain:.1f} xP</span></strong>
+                        <strong>{buy_n}</strong> <span style="font-family: var(--font-mono);">({buy_xp_val:.1f} xP)</span>
+                        <span style="color: #8891A6; margin: 0 4px;">|</span>
+                        <strong>Net Projected Gain: <span style="font-family: var(--font-mono); color: #4CBE86; font-size: 15px;">+{net_gain:.1f} xP</span></strong>
                     </div>
                 </div>
-                """, unsafe_allow_html=True)
+                """)
             else:
                 st.info("✅ **Squad Transfer Status:** No transfer recommended this week. Your starting players are already optimal for their budget range.")
 
@@ -656,11 +732,11 @@ def render_rate_my_team_section(df_live, raw_json, current_gw):
             is_starter = s['Slot'] <= 11
             is_c = "Captain" in str(s['Role'])
             if is_c:
-                return ['background-color: #2b2410; color: #FFFFFF; font-weight: bold;' for _ in s]
+                return ['background-color: #2b2410; color: #F2F4F8; font-weight: bold;' for _ in s]
             elif is_starter:
-                return ['color: #FFFFFF;' for _ in s]
+                return ['color: #F2F4F8;' for _ in s]
             else:
-                return ['background-color: #1a1e24; color: #FFFFFF;' for _ in s]
+                return ['background-color: #1A2235; color: #F2F4F8;' for _ in s]
 
         st.dataframe(
             rmt_table.style.apply(style_rmt_rows, axis=1).format({"Base xP": "{:.1f}", "Effective xP": "{:.1f}"}),
@@ -689,9 +765,9 @@ try:
         st.sidebar.markdown("### 🧠 Model Diagnostics")
         st.sidebar.metric("RMSE (Error)", f"{metrics.get('rmse', 'N/A')}", delta_color="inverse")
         st.sidebar.metric("R² (Accuracy)", f"{metrics.get('r2', 'N/A')}")
-        st.sidebar.caption("Project Established: August 2026\nCurrent Engine: ApexFPL Engine v1.2")
+        st.sidebar.caption("Project Established: August 2026\nCurrent Engine: CatalanPlays Engine v1.2")
 except FileNotFoundError:
-    st.sidebar.caption("Project Established: August 2026\nCurrent Engine: ApexFPL Engine v1.2")
+    st.sidebar.caption("Project Established: August 2026\nCurrent Engine: CatalanPlays Engine v1.2")
 
 # --- REAL-TIME MATCHDAY INTELLIGENCE ---
 if raw_json and 'static' in raw_json and 'events' in raw_json['static']:
@@ -806,25 +882,45 @@ with tab_pred:
     
     # 3. Preparation for Display
     display_cols = {
-        'web_name': 'Player', 
-        'team_name': 'Team', 
+        'web_name': 'Player',
+        'team_name': 'Team',
         'next_opponent': 'Opponent',
         'position': 'Pos',
-        'final_xp': 'Predicted Points', 
+        'final_xp': 'Predicted Points',
+        'defensive_contribution_per_90': 'DEFCON/90',
+        'bonus': 'Bonus',
+        'bps': 'BPS',
         'reasoning': 'Reasoning',
-        'value': 'Price (£m)', 
+        'value': 'Price (£m)',
+        'price_change_today': 'Price Δ (Today)',
+        'ownership_pct': 'Owned %',
         'next_match_difficulty': 'Diff (1-5)'
     }
-    
+
     final_table = view_df[display_cols.keys()].rename(columns=display_cols).sort_values(by='Predicted Points', ascending=False).reset_index(drop=True)
     
     # 4. HIGHLIGHT TOP 5 PLAYERS (The Visual Fix with High-Contrast Text)
     def highlight_top5(s):
         is_top5 = s.name < 5 # Since we reset index, top 5 are 0,1,2,3,4
-        return ['background-color: #2e2612; color: #FFFFFF;' if is_top5 else 'color: #FFFFFF;' for _ in s]
+        return ['background-color: #2e2612; color: #F2F4F8;' if is_top5 else 'color: #F2F4F8;' for _ in s]
     
+    def format_price_delta(v):
+        if v > 0:
+            return f"▲ +£{v:.1f}m"
+        elif v < 0:
+            return f"▼ -£{abs(v):.1f}m"
+        return "— £0.0m"
+
     st.dataframe(
-        final_table.style.apply(highlight_top5, axis=1).format({"Predicted Points": "{:.1f}", "Price (£m)": "£{:.1f}"}),
+        final_table.style.apply(highlight_top5, axis=1).format({
+            "Predicted Points": "{:.1f}",
+            "Price (£m)": "£{:.1f}",
+            "DEFCON/90": "{:.1f}",
+            "Bonus": "{:d}",
+            "BPS": "{:d}",
+            "Price Δ (Today)": format_price_delta,
+            "Owned %": "{:.1f}%"
+        }),
         use_container_width=True,
         height=600
     )
@@ -1002,7 +1098,7 @@ with tab_hauls:
 
         st.markdown("---")
         st.dataframe(
-            df_career.style.set_properties(**{'color': '#FFFFFF'}).format({"Career FPL Points": "{:,d}"}),
+            df_career.style.set_properties(**{'color': '#F2F4F8'}).format({"Career FPL Points": "{:,d}"}),
             use_container_width=True,
             height=300
         )
@@ -1027,7 +1123,7 @@ with tab_hauls:
 
         st.markdown("---")
         st.dataframe(
-            df_single.style.set_properties(**{'color': '#FFFFFF'}).format({"Points": "{:d}"}),
+            df_single.style.set_properties(**{'color': '#F2F4F8'}).format({"Points": "{:d}"}),
             use_container_width=True,
             height=320
         )
@@ -1040,7 +1136,7 @@ with tab_info:
     
     st.subheader("1. Architecture")
     st.markdown("""
-    The **ApexFPL Engine v1.2** uses a hybrid architecture:
+    The **CatalanPlays Engine v1.2** uses a hybrid architecture:
     * **Data Layer:** Live API ingestion from FPL endpoints.
     * **Model Layer:** Linear Regression trained on 2021–2026 historical data.
     * **Logic Layer:** Rule-based adjustments for 'Pep Roulette' (Rotation) and Fixture Difficulty.
@@ -1065,29 +1161,26 @@ with tab_info:
         """)
 
     st.subheader("3. Credits & Timeline")
-    st.text(f"Developed by Subanta Poudel\nProject Established: August 2026\nCurrent Engine: ApexFPL Engine v1.2\nLast Updated: {datetime.now().strftime('%Y-%m-%d')}")
+    st.text(f"Developed by Subanta Poudel\nProject Established: August 2026\nCurrent Engine: CatalanPlays Engine v1.2\nLast Updated: {datetime.now().strftime('%Y-%m-%d')}")
 
 # --- FOOTER ---
 st.markdown("---")
-st.markdown(
-    """
+render_html("""
     <style>
     .footer {
         position: fixed;
         left: 0;
         bottom: 0;
         width: 100%;
-        background-color: #0E1117;
-        color: #808495;
+        background-color: #0F1420;
+        color: #8891A6;
         text-align: center;
         padding: 10px;
         font-size: 14px;
-        border-top: 1px solid #262730;
+        border-top: 1px solid #2A3450;
     }
     </style>
     <div class="footer">
-        © 2026 ApexFPL Engine v1.2 | Created by <b>Subanta Poudel</b> | Project Established: August 2026
+        © 2026 CatalanPlays Engine v1.2 | Created by <b>Subanta Poudel</b> | Project Established: August 2026
     </div>
-    """,
-    unsafe_allow_html=True
-)
+    """)

@@ -1,17 +1,17 @@
-# ⚡ ApexFPL — Explainable AI & Decision Engine for Fantasy Premier League
+# ⚽ CatalanPlays — Explainable AI & Decision Engine for Fantasy Premier League
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://catalan-fpl.streamlit.app)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-ApexFPL is an open-source Expected Points ($\text{xP}$) forecasting and squad optimization suite for Fantasy Premier League managers. 
+CatalanPlays is an open-source Expected Points ($\text{xP}$) forecasting and squad optimization suite for Fantasy Premier League managers. 
 
 ---
 
-## ❓ What is ApexFPL?
+## ❓ What is CatalanPlays?
 
-ApexFPL is an intelligent decision-support application built for Fantasy Premier League (FPL) managers. Instead of relying on gut feeling, the platform analyzes over 110,000 historical match records to forecast upcoming player performance in real time.
+CatalanPlays is an intelligent decision-support application built for Fantasy Premier League (FPL) managers. Instead of relying on gut feeling, the platform analyzes over 110,000 historical match records to forecast upcoming player performance in real time.
 
-Unlike traditional "black-box" artificial intelligence that simply outputs a number without context, ApexFPL uses an **Explainable AI framework**—every projection clearly explains why a player is expected to score points (factoring in recent form, matchup difficulty, clean sheet odds, and squad rotation risks). Users can enter their unique FPL Team ID to immediately receive tailored starting XI optimizations and budget-compliant transfer recommendations.
+Unlike traditional "black-box" artificial intelligence that simply outputs a number without context, CatalanPlays uses an **Explainable AI framework**—every projection clearly explains why a player is expected to score points (factoring in recent form, matchup difficulty, clean sheet odds, and squad rotation risks). Users can enter their unique FPL Team ID to immediately receive tailored starting XI optimizations and budget-compliant transfer recommendations.
 
 ---
 
@@ -45,7 +45,7 @@ streamlit run app.py
 
 ---
 
-## ⚡ Project Case Study: ApexFPL Decision Engine
+## ⚡ Project Case Study: CatalanPlays Decision Engine
 
 ### 1. Architectural Overview
 
@@ -113,7 +113,7 @@ streamlit run app.py
 ## 💼 Resume & CV Bullet Points
 
 ### For Machine Learning / Data Science Resumes
-- Engineered and deployed **ApexFPL**, an end-to-end predictive analytics platform forecasting Expected Points ($\text{xP}$) for 750+ Premier League players across 110,000+ historical records.
+- Engineered and deployed **CatalanPlays**, an end-to-end predictive analytics platform forecasting Expected Points ($\text{xP}$) for 750+ Premier League players across 110,000+ historical records.
 - Architected a Hybrid Intelligence engine integrating Scikit-learn statistical regression with dynamic heuristic layers (squad-depth rotation risk, fixture difficulty modeling, clean sheet probability).
 - Eliminated backtesting data leakage by building point-in-time feature extraction pipelines with PyArrow, optimizing CSV parsing speeds by over 80%.
 - Implemented an explainable AI framework, translating mathematical model outputs into transparent, human-readable decision breakdowns for end users.

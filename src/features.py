@@ -217,6 +217,42 @@ def process_data(api_data, target_gw=None):
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
             df[f'rolling_3_{col}'] = (df[col] / normalization_gw).fillna(0)
 
+    # 4b. Defensive Contribution (DEFCON) — 2025-26 scoring rule.
+    # FPL's `defensive_contribution` field is the season-cumulative combined
+    # CBIT count (DEF/GKP) or CBIRT count (MID/FWD) that the rule is scored on;
+    # `defensive_contribution_per_90` is that season rate normalized to a full match.
+    # Verified directly against the raw components (clearances_blocks_interceptions +
+    # tackles [+ recoveries for MID/FWD]) — this is not a derived/approximate stat.
+    if 'defensive_contribution_per_90' not in df.columns:
+        df['defensive_contribution_per_90'] = 0.0
+    df['defensive_contribution_per_90'] = pd.to_numeric(
+        df['defensive_contribution_per_90'], errors='coerce'
+    ).fillna(0.0)
+
+    # 4c. Live matchday intelligence: bonus points, BPS, price movement, ownership.
+    # All straight from bootstrap-static — no new data source, just fields the
+    # pipeline wasn't reading yet.
+    if 'bonus' not in df.columns:
+        df['bonus'] = 0
+    df['bonus'] = pd.to_numeric(df['bonus'], errors='coerce').fillna(0).astype(int)
+
+    if 'bps' not in df.columns:
+        df['bps'] = 0
+    df['bps'] = pd.to_numeric(df['bps'], errors='coerce').fillna(0).astype(int)
+
+    # cost_change_event is FPL's own signed price movement for the current
+    # event, in tenths of a million (e.g. 1 -> +£0.1m). Convert to real £m here
+    # so the UI never has to remember the /10 scale factor.
+    if 'cost_change_event' not in df.columns:
+        df['cost_change_event'] = 0
+    df['price_change_today'] = (
+        pd.to_numeric(df['cost_change_event'], errors='coerce').fillna(0) / 10.0
+    )
+
+    if 'selected_by_percent' not in df.columns:
+        df['selected_by_percent'] = 0.0
+    df['ownership_pct'] = pd.to_numeric(df['selected_by_percent'], errors='coerce').fillna(0.0)
+
     # 5. Availability
     df['chance_of_playing'] = df['chance_of_playing_next_round'].fillna(100)
     
@@ -230,7 +266,7 @@ def process_data(api_data, target_gw=None):
     df['starter_prob'] = df['minutes_per_game'].apply(calculate_starter_prob)
     
     # Fill remaining NaNs defensively
-    for col in feature_cols + ['starter_prob', 'chance_of_playing', 'next_match_difficulty']:
+    for col in feature_cols + ['starter_prob', 'chance_of_playing', 'next_match_difficulty', 'defensive_contribution_per_90', 'bonus', 'bps', 'price_change_today', 'ownership_pct']:
         if col in df.columns:
             df[col] = df[col].fillna(0)
             
