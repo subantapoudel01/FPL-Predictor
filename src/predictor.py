@@ -160,5 +160,33 @@ def make_predictions(df, model, is_preseason=False):
     results = df.apply(apply_expert_logic, axis=1)
     df['final_xp'] = results['final_xp'].fillna(0.0)
     df['reasoning'] = results['reasoning'].fillna(f"{'(Prior season baseline) ' if is_preseason else ''}0.0 pts")
-    
+
+    # 3. Captaincy Ceiling Score & Eligibility
+    # The plain final_xp ranking let budget defenders and low-ceiling
+    # midfielders crowd the captaincy board just by being nailed starters
+    # with an easy fixture -- fine for overall points, wrong for captaincy,
+    # where variance/upside matters as much as the median outcome.
+    #
+    # Eligibility: attackers only, unless a defender's own real expected
+    # goal involvement rate clears a genuine attacking threshold -- not a
+    # proxy, `expected_goal_involvements_per_90` is FPL's own official xGI
+    # rate for that player.
+    xgi90 = pd.to_numeric(df.get('expected_goal_involvements_per_90', 0.0), errors='coerce').fillna(0.0)
+    df['xgi_per_90'] = xgi90
+    df['captain_eligible'] = df['position'].isin(['MID', 'FWD']) | ((df['position'] == 'DEF') & (xgi90 > 0.30))
+
+    # Ceiling Score: rewards the two things that actually raise a captain's
+    # ceiling above their median expected points -- being a genuine premium
+    # asset (price is a reasonable proxy for a club's attacking hierarchy)
+    # and being the designated penalty taker (a nailed-on extra scoring
+    # route). `penalties_order == 1` is FPL's own field for first-choice
+    # taker; deliberately not a hardcoded list of player names, which would
+    # silently go stale the moment a transfer or injury changes who takes
+    # penalties for a given club.
+    pen_order = pd.to_numeric(df.get('penalties_order', np.nan), errors='coerce')
+    df['is_penalty_taker'] = pen_order == 1
+    price_mult = np.where(df['val_m'] >= 9.5, 1.25, 1.0)
+    pen_mult = np.where(df['is_penalty_taker'], 1.15, 1.0)
+    df['ceiling_score'] = df['final_xp'] * price_mult * pen_mult
+
     return df

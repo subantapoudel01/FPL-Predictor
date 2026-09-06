@@ -86,11 +86,20 @@ def process_data(api_data, target_gw=None):
     events = static.get('events', [])
     
     # 1. Identify Target Gameweek & Pre-Season Status
-    next_event = next((e for e in events if e.get('is_next')), None)
-    if next_event is None:
-        next_event = next((e for e in events if not e.get('finished')), None)
-        
-    detected_gw = next_event['id'] if next_event else 1
+    # `is_next` flips to the FOLLOWING gameweek the moment the current
+    # gameweek's deadline passes -- while its own matches are still being
+    # played (is_current=True, finished=False). Checking is_next first
+    # meant the app jumped to predicting next week's gameweek the instant
+    # a deadline passed, before this week had even kicked off. `is_current`
+    # must win whenever it's set; only fall through to is_next once the
+    # current gameweek has actually finished.
+    active_event = next((e for e in events if e.get('is_current')), None)
+    if active_event is None:
+        active_event = next((e for e in events if e.get('is_next')), None)
+    if active_event is None:
+        active_event = next((e for e in events if not e.get('finished')), None)
+
+    detected_gw = active_event['id'] if active_event else 1
     if target_gw is None:
         target_gw = detected_gw
         
@@ -272,12 +281,14 @@ def process_data(api_data, target_gw=None):
             
     return df, target_gw, is_preseason
 
-@st.cache_data(ttl=604800)
+@st.cache_data(ttl=3600)
 def fetch_full_history():
     """
     Fetches complete multi-season historical player gameweek datasets
     dynamically from Vaastav GitHub repository using PyArrow engine and column trimming.
-    Cached for 7 days (ttl=604800) for maximum performance.
+    Cached for 1 hour -- short enough that the Last Gameweek Recap (see app.py)
+    picks up a newly-published gameweek reasonably promptly, since this is the
+    only place that data comes from now.
     """
     seasons = {
         "2025-26": "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/2025-26/gws/merged_gw.csv",
@@ -288,7 +299,8 @@ def fetch_full_history():
     
     needed_cols = [
         'name', 'GW', 'total_points', 'minutes', 'fixture', 'opponent_team',
-        'was_home', 'ict_index', 'creativity', 'influence', 'threat', 'value'
+        'was_home', 'ict_index', 'creativity', 'influence', 'threat', 'value',
+        'team', 'position'
     ]
     
     dfs = []

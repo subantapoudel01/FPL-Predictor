@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # Internal Modules
-from src.data_loader import fetch_api_data, fetch_gameweek_history, fetch_player_live_summary, fetch_user_team, TZ_MAP, format_timestamp_tz
+from src.data_loader import fetch_api_data, fetch_player_live_summary, fetch_user_team, TZ_MAP, format_timestamp_tz
 from src.features import process_data, fetch_full_history
 from src.predictor import load_model, make_predictions
 
@@ -138,6 +138,79 @@ if not raw_json or not model:
 df_live, CURRENT_GW, IS_PRESEASON = process_data(raw_json, target_gw=None)
 df_live = make_predictions(df_live, model, is_preseason=IS_PRESEASON)
 
+# --- LAST-GAMEWEEK RECAP TARGET ---
+_events_list = raw_json.get('static', {}).get('events', []) if raw_json else []
+_current_gw_event = next((e for e in _events_list if e.get('id') == CURRENT_GW), None)
+
+_finished_gw_ids = [e['id'] for e in _events_list if e.get('finished')]
+RECAP_GW = max(_finished_gw_ids) if _finished_gw_ids else None
+
+CURRENT_SEASON_LABEL = "2025-26"
+
+# --- HELPER: LAST GAMEWEEK RECAP (PREDICTED VS. ACTUAL, NO LEAKAGE, NO STORAGE) ---
+def render_last_gameweek_recap(gw_id):
+    """
+    Shows predicted-vs-actual for the most recently finished gameweek.
+
+    Reconstructed entirely from fetch_full_history() -- the same historical
+    per-gameweek pipeline the Player History tab already uses. Each row
+    there is a true point-in-time record: rolling features are computed
+    with .shift(1).rolling(3), grouped by player and season, so a
+    gameweek's `raw_xp` only ever depends on gameweeks *before* it. That
+    means this is safe to recompute fresh on every page load -- no local
+    snapshot file, nothing to lose on a Streamlit Cloud redeploy.
+
+    Trade-off, stated plainly: this compares the base statistical model's
+    raw_xp, not the full rule-adjusted final_xp shown in the live
+    Predictions table. Reconstructing the expert-rule layer (fixture
+    difficulty, rotation risk, DEFCON, etc. as they stood *for that
+    gameweek specifically*) historically is a larger undertaking than
+    reusing data this app already fetches for another tab.
+    """
+    if gw_id is None:
+        return
+
+    df_hist_all = load_historical_data(model)
+    if df_hist_all.empty:
+        return
+
+    gw_rows = df_hist_all[
+        (df_hist_all['season'] == CURRENT_SEASON_LABEL) & (df_hist_all['GW'] == gw_id)
+    ].copy()
+    if gw_rows.empty:
+        st.info(f"ℹ️ **GW {gw_id} Recap unavailable:** the historical data source hasn't published this gameweek yet. Check back shortly.")
+        return
+
+    gw_rows['Diff'] = gw_rows['raw_xp'] - gw_rows['total_points']
+    rmse = float(np.sqrt((gw_rows['Diff'] ** 2).mean()))
+    top_performer = gw_rows.sort_values('total_points', ascending=False).iloc[0]
+
+    st.markdown(f"### 📋 Last Gameweek Recap — GW {gw_id}")
+    st.caption("Reconstructed from historical per-gameweek data using only stats available before that gameweek -- no snapshot storage, no hindsight.")
+
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.metric("RMSE (This Gameweek)", f"{rmse:.2f}")
+    with m2:
+        st.metric("Players Tracked", f"{len(gw_rows)}")
+    with m3:
+        st.metric("Top Performer", f"{top_performer['name']} ({int(top_performer['total_points'])} pts)")
+
+    display_recap = gw_rows.rename(columns={
+        'name': 'Player', 'team': 'Team', 'position': 'Pos',
+        'raw_xp': 'Predicted', 'total_points': 'Actual'
+    })[['Player', 'Team', 'Pos', 'Predicted', 'Actual', 'Diff']].sort_values(by='Actual', ascending=False).head(20).reset_index(drop=True)
+
+    st.dataframe(
+        display_recap.style
+            .set_properties(**{'color': '#F2F4F8'})
+            .format({"Predicted": "{:.1f}", "Diff": "{:+.1f}"}),
+        use_container_width=True,
+        height=420,
+        hide_index=True
+    )
+    st.markdown("---")
+
 # --- HELPER: AI TEAM OF THE WEEK (FOOTBALL PITCH VISUALIZER) ---
 def select_team_of_the_week(df_candidates):
     """
@@ -167,31 +240,60 @@ def select_team_of_the_week(df_candidates):
     valid_formations = [
         (3, 5, 2), (3, 4, 3), (4, 4, 2), (4, 3, 3), (4, 5, 1), (5, 3, 2), (5, 4, 1), (5, 2, 3)
     ]
-    
+
+    def pick_within_club_cap(pools, quotas, max_per_club=3):
+        """
+        Fills each position quota greedily by xP, but tracks a running
+        per-club count *across all positions in this attempt* and skips
+        any player who would push their club past the cap -- continuing
+        down that position's candidate list instead. The previous version
+        sliced a fixed top-N per position independently, so if one club
+        (e.g. a favourable single-fixture gameweek) dominated the top of
+        several positions at once, every formation ended up with 4+ of
+        that club and got discarded outright with nothing to show.
+        Returns (rows, club_counts) or (None, club_counts) if any quota
+        can't be filled without breaching the cap.
+        """
+        rows = []
+        club_counts = {}
+        for pos, need in quotas.items():
+            pool = pools[pos]
+            taken = 0
+            for _, row in pool.iterrows():
+                if taken >= need:
+                    break
+                club = row['team_name']
+                if club_counts.get(club, 0) >= max_per_club:
+                    continue
+                rows.append(row)
+                club_counts[club] = club_counts.get(club, 0) + 1
+                taken += 1
+            if taken < need:
+                return None, club_counts
+        return rows, club_counts
+
+    pools = {'GKP': gkp_cand, 'DEF': def_cand, 'MID': mid_cand, 'FWD': fwd_cand}
+
     best_squad = None
     best_xp = -1.0
     best_formation = None
-    
+
     for (n_def, n_mid, n_fwd) in valid_formations:
         if len(gkp_cand) < 1 or len(def_cand) < n_def or len(mid_cand) < n_mid or len(fwd_cand) < n_fwd:
             continue
-            
-        gkp_picks = gkp_cand.iloc[0:1]
-        def_picks = def_cand.head(n_def)
-        mid_picks = mid_cand.head(n_mid)
-        fwd_picks = fwd_cand.head(n_fwd)
-        
-        squad = pd.concat([gkp_picks, def_picks, mid_picks, fwd_picks], ignore_index=True)
-        
-        if squad['team_name'].value_counts().max() > 3:
+
+        quotas = {'GKP': 1, 'DEF': n_def, 'MID': n_mid, 'FWD': n_fwd}
+        rows, _ = pick_within_club_cap(pools, quotas)
+        if rows is None:
             continue
-            
+
+        squad = pd.DataFrame(rows).reset_index(drop=True)
         tot_xp = squad['final_xp'].sum()
         if tot_xp > best_xp:
             best_xp = tot_xp
             best_squad = squad
             best_formation = f"{n_def}-{n_mid}-{n_fwd}"
-            
+
     if best_squad is None or best_squad.empty:
         return None, None
         
@@ -274,13 +376,21 @@ def render_captaincy_card(df_candidates):
     """
     if df_candidates is None or df_candidates.empty:
         return
-        
-    caps = df_candidates.sort_values(by='final_xp', ascending=False).head(5).reset_index(drop=True)
+
+    # Captaincy eligibility: attackers, or defenders with real attacking
+    # threat (own xGI/90 > 0.30 -- see src/predictor.py). Ranked by Ceiling
+    # Score rather than plain final_xp, so a nailed budget defender with an
+    # easy fixture doesn't crowd out genuine explosive-upside attackers.
+    eligible = df_candidates[df_candidates.get('captain_eligible', False) == True]
+    if eligible.empty:
+        eligible = df_candidates  # Degrade gracefully rather than show nothing.
+
+    caps = eligible.sort_values(by='ceiling_score', ascending=False).head(5).reset_index(drop=True)
     if caps.empty:
         return
 
     st.markdown("### 👑 Top Captain Picks")
-    
+
     cap_rows = []
     for idx, r in caps.iterrows():
         xp = float(r.get('final_xp', 0.0))
@@ -289,7 +399,7 @@ def render_captaincy_card(df_candidates):
         opp = r.get('next_opponent', '-')
         diff = float(r.get('next_match_difficulty', 3))
         starter_prob = float(r.get('starter_prob', 100))
-        
+
         if xp >= 6.0:
             stars = "⭐⭐⭐⭐⭐"
         elif xp >= 4.5:
@@ -306,18 +416,22 @@ def render_captaincy_card(df_candidates):
             rationale_parts.append("Home Fixture")
         elif "(A)" in opp:
             rationale_parts.append("Away Match")
-            
+
         if diff <= 2:
             rationale_parts.append("Favorable Opponent (FDR 1-2)")
         elif diff >= 4:
             rationale_parts.append("Tough Matchup")
 
         val_m = float(r.get('val_m', r.get('value', 0)))
-        if val_m >= 10.0:
+        if bool(r.get('is_penalty_taker', False)):
+            rationale_parts.append("Penalty Taker")
+        if val_m >= 9.5:
             rationale_parts.append("Premium Captain Potential")
         elif starter_prob >= 90:
             rationale_parts.append("Nailed Starter (100%)")
-            
+        if r.get('position') == 'DEF':
+            rationale_parts.append(f"Attacking Threat (xGI/90 {float(r.get('xgi_per_90', 0)):.2f})")
+
         rationale_str = " · ".join(rationale_parts) if rationale_parts else "Strong Gameweek Baseline"
 
         cap_rows.append({
@@ -339,7 +453,8 @@ def render_captaincy_card(df_candidates):
             .set_properties(**{'color': '#F2F4F8'})
             .set_properties(subset=['Player'], **{'font-weight': '700'}),
         use_container_width=True,
-        height=210
+        height=210,
+        hide_index=True
     )
 
 # --- HELPER: 5-GAMEWEEK FIXTURE TICKER ---
@@ -428,7 +543,8 @@ def render_fixture_ticker(raw_json, current_gw):
     st.dataframe(
         df_ticker.style.apply(apply_ticker_styling, axis=None).format({"Avg FDR": "{:.2f}"}),
         use_container_width=True,
-        height=400
+        height=400,
+        hide_index=True
     )
 
 # --- HELPER: BENCH OPTIMIZATION & TRANSFER RECOMMENDATION ---
@@ -741,7 +857,8 @@ def render_rate_my_team_section(df_live, raw_json, current_gw):
         st.dataframe(
             rmt_table.style.apply(style_rmt_rows, axis=1).format({"Base xP": "{:.1f}", "Effective xP": "{:.1f}"}),
             use_container_width=True,
-            height=420
+            height=420,
+            hide_index=True
         )
 
 # --- SIDEBAR CONTROL PANEL ---
@@ -772,9 +889,10 @@ except FileNotFoundError:
 # --- REAL-TIME MATCHDAY INTELLIGENCE ---
 if raw_json and 'static' in raw_json and 'events' in raw_json['static']:
     events_list = raw_json['static']['events']
-    next_ev = next((e for e in events_list if e.get('is_next')), None)
-    curr_ev = next((e for e in events_list if e.get('is_current')), None)
-    target_ev = next_ev or curr_ev or (events_list[0] if events_list else None)
+    # Reuse the same event process_data() already resolved for CURRENT_GW
+    # (is_current-priority -- see src/features.py) so this banner can never
+    # disagree with the sidebar/predictions about which gameweek "now" is.
+    target_ev = _current_gw_event or (events_list[0] if events_list else None)
 
     if target_ev:
         gw_id = target_ev.get('id', 1)
@@ -850,6 +968,8 @@ tab_pred, tab_hist, tab_hauls, tab_info = st.tabs(["🔮 Predictions", "📊 Pla
 
 # === TAB 1: LIVE PREDICTIONS ===
 with tab_pred:
+    render_last_gameweek_recap(RECAP_GW)
+
     totw_squad, totw_info = select_team_of_the_week(df_live)
     if totw_squad is not None:
         render_pitch_visualizer(totw_squad, totw_info, CURRENT_GW)
@@ -881,29 +1001,39 @@ with tab_pred:
         view_df = view_df[view_df['web_name'].str.contains(re.escape(clean_search), case=False, na=False)]
     
     # 3. Preparation for Display
-    display_cols = {
+    # Core columns are what a manager scans first: who, for whom, against
+    # whom, at what price in xP, and why. Everything else (DEFCON, bonus/BPS,
+    # price movement, ownership) is real signal but not first-glance signal,
+    # so it lives in a collapsed expander instead of stretching the table
+    # wide on mobile.
+    core_cols = {
         'web_name': 'Player',
         'team_name': 'Team',
         'next_opponent': 'Opponent',
         'position': 'Pos',
         'final_xp': 'Predicted Points',
+        'reasoning': 'Reasoning'
+    }
+    secondary_cols = {
+        'web_name': 'Player',
         'defensive_contribution_per_90': 'DEFCON/90',
         'bonus': 'Bonus',
         'bps': 'BPS',
-        'reasoning': 'Reasoning',
         'value': 'Price (£m)',
         'price_change_today': 'Price Δ (Today)',
         'ownership_pct': 'Owned %',
         'next_match_difficulty': 'Diff (1-5)'
     }
 
-    final_table = view_df[display_cols.keys()].rename(columns=display_cols).sort_values(by='Predicted Points', ascending=False).reset_index(drop=True)
-    
-    # 4. HIGHLIGHT TOP 5 PLAYERS (The Visual Fix with High-Contrast Text)
+    view_df_sorted = view_df.sort_values(by='final_xp', ascending=False).reset_index(drop=True)
+    core_table = view_df_sorted[core_cols.keys()].rename(columns=core_cols)
+    secondary_table = view_df_sorted[secondary_cols.keys()].rename(columns=secondary_cols)
+
+    # HIGHLIGHT TOP 5 PLAYERS (The Visual Fix with High-Contrast Text)
     def highlight_top5(s):
-        is_top5 = s.name < 5 # Since we reset index, top 5 are 0,1,2,3,4
+        is_top5 = s.name < 5 # Row order matches view_df_sorted, so top 5 are 0,1,2,3,4
         return ['background-color: #2e2612; color: #F2F4F8;' if is_top5 else 'color: #F2F4F8;' for _ in s]
-    
+
     def format_price_delta(v):
         if v > 0:
             return f"▲ +£{v:.1f}m"
@@ -912,18 +1042,26 @@ with tab_pred:
         return "— £0.0m"
 
     st.dataframe(
-        final_table.style.apply(highlight_top5, axis=1).format({
-            "Predicted Points": "{:.1f}",
-            "Price (£m)": "£{:.1f}",
-            "DEFCON/90": "{:.1f}",
-            "Bonus": "{:d}",
-            "BPS": "{:d}",
-            "Price Δ (Today)": format_price_delta,
-            "Owned %": "{:.1f}%"
-        }),
+        core_table.style.apply(highlight_top5, axis=1).format({"Predicted Points": "{:.1f}"}),
         use_container_width=True,
-        height=600
+        height=600,
+        hide_index=True
     )
+
+    with st.expander("📊 View Underlying Defensive & Bonus Metrics"):
+        st.dataframe(
+            secondary_table.style.apply(highlight_top5, axis=1).format({
+                "Price (£m)": "£{:.1f}",
+                "DEFCON/90": "{:.1f}",
+                "Bonus": "{:d}",
+                "BPS": "{:d}",
+                "Price Δ (Today)": format_price_delta,
+                "Owned %": "{:.1f}%"
+            }),
+            use_container_width=True,
+            height=500,
+            hide_index=True
+        )
 
     st.markdown("---")
     # Render 5-Gameweek Fixture Ticker
@@ -1063,7 +1201,8 @@ with tab_hist:
                         "Predicted xP": "{:.1f}",
                         "Actual Points": "{:d}"
                     }),
-                    use_container_width=True
+                    use_container_width=True,
+                    hide_index=True
                 )
 
 # === TAB 3: HALL OF FAME (ALL-TIME FPL LEGENDS) ===
@@ -1100,7 +1239,8 @@ with tab_hauls:
         st.dataframe(
             df_career.style.set_properties(**{'color': '#F2F4F8'}).format({"Career FPL Points": "{:,d}"}),
             use_container_width=True,
-            height=300
+            height=300,
+            hide_index=True
         )
     else:
         single_season_data = [
@@ -1125,7 +1265,8 @@ with tab_hauls:
         st.dataframe(
             df_single.style.set_properties(**{'color': '#F2F4F8'}).format({"Points": "{:d}"}),
             use_container_width=True,
-            height=320
+            height=320,
+            hide_index=True
         )
 
     st.caption("ℹ️ Note: Historical records pre-dating 2016 are statically curated.")
