@@ -1,9 +1,10 @@
 {
   "season": "2025-26",
   "model_name": "linear_reg_v1",
-  "generated_at_utc": "2026-09-06T17:46:28.630652+00:00",
+  "generated_at_utc": "2026-09-07T06:12:13.786318+00:00",
   "n_gameweeks": 38,
   "n_player_gameweeks": 29338,
+  "n_features": 7,
   "overall": {
     "n": 29338,
     "rmse": 2.010221156065329,
