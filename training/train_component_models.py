@@ -26,17 +26,29 @@ src/components.py::derive_component_inputs() first, which is the one place
 the historical-vs-live translation happens. See that function's docstring
 for exactly which raw columns each "_input" name maps to.
 
-Train seasons / eval season: same convention as
-training/train_position_models.py -- 2021-22..2024-25 to train,
-2025-26 held out for evaluation/backtest.py. One necessary exception:
+Train seasons / eval season: 2021-22..2024-25 held-out-clean for every
+component EXCEPT bonus -- see fit_bonus_model() below, which is the one
+component genuinely fit on EVAL_SEASON itself, for a real data reason
+(2026/27 recalibrated BPS, and DEFCON has no history before 2025-26 at
+all), not an oversight. main()'s leak guard only checks the seasons the
+*other* components trained on (_train_rows(df), which excludes
+EVAL_SEASON) precisely because it CANNOT also cover fit_bonus_model's
+deliberate exception without raising on every run -- it prints that
+exception loudly instead (see main()) rather than silently passing it.
+Concretely: evaluation/backtest.py's reported bonus-component accuracy
+for 2025-26 is in-sample, not out-of-sample, unlike every other
+component's. This is a known, stated limitation of comparing the
+component pipeline against the position ensemble on that season, not
+fixed here -- a genuinely clean fix needs a within-season walk-forward
+refit of the bonus model (train on gameweeks strictly before the one
+being scored), which is a larger change than this file currently does
+for any other component either.
+
 DEFCON has no history before 2025-26 (the rule didn't exist), so its
 walk-forward hit-rate estimator's *position-level prior* is fit from
 2025-26 itself, inside fetch_full_history() -- see
 src/features.py::_defcon_walk_forward_hit_rate's docstring for why that
-specific, narrow exception is unavoidable rather than a leakage bug. The
-bonus model's DEFCON-interaction term is fit on 2025-26 only for a related
-reason: 2026/27 recalibrated BPS specifically for heavy-DEFCON players,
-and only 2025-26+ data reflects that recalibration.
+specific, narrow exception is unavoidable rather than a leakage bug.
 
 Usage:
     python training/train_component_models.py
@@ -222,6 +234,12 @@ def main():
     print(f"  fetched {len(df)} player-gameweeks in {time.time() - t0:.1f}s")
     if EVAL_SEASON in _train_rows(df)['season'].unique():
         raise RuntimeError(f"{EVAL_SEASON} leaked into the training frame -- refusing to train")
+    print(
+        f"  NOTE: fit_bonus_model() is the one exception to the above -- it "
+        f"trains on {EVAL_SEASON} itself (see this file's module docstring "
+        f"for why), so the bonus component's reported {EVAL_SEASON} accuracy "
+        f"is in-sample, not out-of-sample like every other component's."
+    )
 
     bundle = {}
     print("Fitting minutes model...")

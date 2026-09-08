@@ -295,6 +295,15 @@ def predict_defcon(df, bundle, minutes_fraction):
     class of bug: crediting a bench player as if their team's rate applies
     to them regardless of their own game time). Returns points too
     (P(hit) x DEFCON_POINTS).
+
+    KNOWN GAP (see src/config.py::USE_COMPONENT_MODEL's comment): the
+    value returned here feeds predict_bonus as `p_defcon`, but
+    fit_bonus_model trains that feature exclusively against the
+    historical branch's Beta-Binomial estimate -- the live branch's
+    Poisson estimate is a different distribution shape for the same
+    feature name, uncaught by the backtest since it never exercises this
+    live branch. Not calibrated here; needs fixing before
+    USE_COMPONENT_MODEL is ever flipped back on.
     """
     from scipy.stats import poisson
     threshold = np.where(df['position'].isin(['DEF', 'GKP', 'GK']), 10, 12)

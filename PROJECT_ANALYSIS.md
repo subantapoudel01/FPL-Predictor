@@ -1,46 +1,41 @@
 # CatalanPlays — Comprehensive Project Analysis
 
-**As of:** 2026-09-06, commit `d6463b8` + uncommitted working-tree changes (see §12)
-**Live app:** `apexfpl.streamlit.app` (URL not yet renamed to match the CatalanPlays brand)
+**As of:** 2026-09-07, branch `feature/multi-model-group-tools` (commit `34e85e0`, PR #1 open against `main`)
+**Live app:** `apexfpl.streamlit.app` (still on the pre-PR#1 commit; URL not yet renamed to match the CatalanPlays brand)
 **Repo:** `github.com/subantapoudel01/FPL-Predictor`
 
-This document describes the project exactly as it stands today — mechanism by mechanism, not aspirationally. Where something is a heuristic rather than a measured fact, that's said plainly.
+This document describes the project exactly as it stands today — mechanism by mechanism, not aspirationally. Where something is a heuristic rather than a measured fact, that's said plainly. It fully supersedes the previous version of this file, which described a single-`LinearRegression`, four-tab app that no longer exists in this form.
 
 ---
 
 ## 1. What this project is
 
-A **Fantasy Premier League (FPL) decision-support web app**: it predicts each Premier League player's expected points ("xP") for the upcoming gameweek, explains *why* in plain arithmetic, and gives an FPL manager a handful of concrete decisions — who to captain, what to change, whether their bench is optimal.
+A **Fantasy Premier League (FPL) decision-support web app**: it predicts each Premier League player's expected points ("xP") for the upcoming gameweek, explains *why*, gives an individual manager concrete decisions (captain, transfer, bench), and — new this round — extends that to a **group of managers** (a mini-league) and to **external multi-gameweek planning tools**.
 
 Concretely, it is:
-- A **Streamlit single-page app** (`app.py`, 1,342 lines) with four tabs
-- Backed by a **hybrid prediction engine**: one small trained statistical model (`src/predictor.py`) plus a hand-written layer of football-domain rules on top of it
-- Reading **live data** from the official (but unofficial-to-use) FPL REST API on every page load, cached for an hour
-- Supplemented by a **historical data pipeline** pulled from a community-maintained GitHub archive, used for both a "how did last gameweek's predictions do" recap and a multi-season player-history browser
-- A **solo, personal project** by Subanta Poudel — started as CU6051NP university coursework, since stripped of academic framing and rebranded as an independent product
+- A **Streamlit single-page app** (`app.py`, 1,641 lines) with **five tabs**.
+- Backed by a **swappable prediction architecture**: a per-position ML ensemble is production today; a from-scratch component-based pipeline exists fully built and verified, but is held behind a config flag because it backtested worse on the metrics that matter most (§6–7).
+- Reading **live data** from the official (unofficial-to-use) FPL REST API on every page load, plus a **second live data source** now for the Mini-League tab (league standings and every entry's picks).
+- Supplemented by a **historical data pipeline** (vaastav's community GitHub archive) that now also incorporates **Understat** (a fourth data source) and a much richer, multi-horizon feature set.
+- A **solo, personal project** by Subanta Poudel — university coursework origins, since fully rebranded.
 
 ## 2. What this project is *not*
 
-Stated explicitly because each of these has come up as a real point of confusion during development:
+Carried over from the previous audit, with two items now **resolved** and flagged as such:
 
-- **Not a machine-learning showcase.** The core model is a 7-feature `LinearRegression` — deliberately simple, not gradient boosting or a neural net. An earlier audit in this project's own history found that a single feature (minutes played) recovers ~91% of the trained model's R². The accuracy comes mostly from the rule layer's football-domain knowledge, not model sophistication.
-- **Not a price/transfer-market predictor.** Uses each player's *current* FPL price; there is no model of future price rises/falls (the live "Price Δ (Today)" column shows what already happened, not a forecast).
-- **Not a multi-gameweek squad optimizer.** "Rate My Team" suggests a *single* sell/buy for the current gameweek by greedy budget/eligibility search — it is not a linear-programming optimizer planning transfers across several future gameweeks or around chip strategy (Wildcard, Bench Boost, etc.).
-- **Not using third-party expected-goals data.** All "expected" stats (`expected_goal_involvements_per_90`, etc.) come from FPL's own official API fields — there is no Understat/FBref scraping or external xG provider.
-- **Not accounting for non-Premier-League competitions.** No Champions League/cup fatigue modelling (stated in-app under Documentation → Limitations).
-- **Not authenticated or multi-user.** No accounts, no login, no server-side saved squads. The one piece of "personalization" is a bookmarkable URL (`?team_id=...`) for the Rate My Team section — anyone with that link sees that squad; there's no access control.
-- **Not commercially licensed.** Built entirely against the FPL API without a documented public license for that usage, and not affiliated with, endorsed by, or licensed by the Premier League or Fantasy Premier League in any way.
-- **Not running on infrastructure that guarantees uptime or persistence.** Deployed on Streamlit Community Cloud's free tier: it sleeps after inactivity (needs a manual "wake up" click), and its local filesystem is wiped on every redeploy — which is precisely why the recap feature (§7) was redesigned to need no local storage at all.
-- **Not using granular team attack/defence strength data**, even though the FPL API nominally has fields for it (`strength_attack_home/away`, `strength_defence_home/away`) — verified today that **all 20 teams report 0** for those fields this early in the season (FPL's own algorithm hasn't populated them yet). The dynamic clean-sheet model (§7) currently runs on the coarser but always-populated `strength_overall_home/away` instead, with the granular fields wired in to be preferred automatically the moment FPL starts populating them.
+- **Not primarily a linear-regression product any more.** The 7-feature `LinearRegression` is kept on disk (`Models/linear_reg_v1.pkl`) purely so the backtest harness can compare old against new — the live app now serves a per-position `XGBoost + RandomForest` ensemble (§6).
+- **Not a price/transfer-market predictor.** Unchanged — no forecast of future price rises/falls.
+- **Not a multi-gameweek squad optimizer itself, and now explicitly delegates that.** "Rate My Team" is still single-gameweek and greedy. But the app now **exports** a multi-gameweek xP CSV (§9, Sidebar) formatted for `solioanalytics/open-fpl-solver` (formerly `sertalpbilal/FPL-Optimization-Tools` — confirmed via GitHub's redirect to be the same repository, renamed, not a fork) — multi-gameweek planning, free-transfer valuation, chip strategy, and point-hit decisions are explicitly left to that external, purpose-built MILP solver rather than rebuilt here.
+- **~~Not using third-party expected-goals data~~ — now partially resolved.** Understat is integrated as a real 4th data source (player xG/xA/xGChain/xGBuildup/key passes/shots; team xG/xGA/PPDA/Deep) for historical training and backtesting. Live serving still uses FPL's own native `expected_goals_per_90`/`expected_assists_per_90` fields instead of live-scraping Understat — a deliberate choice (§5D) for reliability, not an oversight.
+- **Not accounting for non-Premier-League competitions.** Unchanged.
+- **~~Not authenticated or multi-user~~ — now partially resolved.** Still no accounts/login, but the app is no longer single-user-only in effect: the new **Mini-League tab** (§9) lets a whole group see standings, projected points, captaincy, and effective ownership from one shared, bookmarkable URL (`?league_id=...`), alongside the existing `?team_id=...` for an individual.
+- **Not commercially licensed.** Unchanged.
+- **Not running on infrastructure that guarantees uptime or persistence.** Unchanged — Streamlit Community Cloud free tier, ephemeral filesystem. This constraint was actively checked against every new feature this round (§11).
+- **Not using granular team attack/defence strength data** for the *legacy* rule-layer clean-sheet formula — still true for that one formula. The new per-position and component models instead learn from real historical team/opponent rolling goals-for/against, which doesn't have this gap (§6).
 
 ## 3. Identity history
 
-The project has been renamed twice in its lifetime, visible in git history and in this engagement:
-1. **"Catalan FPL Predictor"** — original coursework name (CU6051NP, London Met)
-2. **"ApexFPL"** — first rebrand, generic energy/lightning branding (⚡, neon green `#00FF87` on near-black)
-3. **"CatalanPlays"** (current) — tied back to the developer's actual personal handles (`catalansubanta`, `catalanplays`), because "Apex" "didn't link" to the developer at all. Visual identity became **"Blaugrana"**: navy ground (`#0F1420`), garnet accent (`#D64B5E`), gold (`#FFC72C`) reserved specifically for captain/star emphasis — a deliberate nod to Catalan football culture (Barça's colours) rather than a generic dark-mode SaaS palette. Typography: Big Shoulders Display (headings), Source Sans 3 (body), IBM Plex Mono (all numeric stats).
-
-The old Docs/coursework files (Word/PPT submissions, Turnitin report) were deliberately removed from the public repo in a past commit ("Production release: ... removed coursework files") to separate the public product from the academic submission.
+Unchanged from the previous audit — see git history. Blaugrana palette, three-name history (Catalan FPL Predictor → ApexFPL → CatalanPlays), coursework files already stripped from the public repo.
 
 ## 4. Architecture
 
@@ -48,157 +43,209 @@ The old Docs/coursework files (Word/PPT submissions, Turnitin report) were delib
 Live FPL API ──┐
                ├─→ src/data_loader.py (whitelist-trims payload) ─→ src/features.py (process_data)
 Fixtures API ──┘                                                         │
-                                                                          ▼
-                                                          df with engineered features,
-                                                    cs_probability, DEFCON, price/ownership, etc.
+League/Entry-Picks API ─→ src/data_loader.py (new: leagues-classic,      ▼
+   entry/{id}/event/{gw}/picks, ttl=900, paginated, polite)   df with engineered features,
+                                                          cs_probability, DEFCON, squad depth,
+                                                          team-rolling goals (live), etc.
                                                                           │
                                                                           ▼
-                                                     src/predictor.py (make_predictions)
-                                                     Linear Regression → raw_xp
-                                                     + expert rule layer → final_xp
-                                                     + captaincy Ceiling Score
+                                                  src/predictor.py::make_predictions
+                                                  dispatches on src/config.py::USE_COMPONENT_MODEL
+                                                       │                        │
+                                       ┌───────────────┘                        └──────────────┐
+                                       ▼                                                        ▼
+                     _make_predictions_position_ensemble                    _make_predictions_component
+                     Models/position_models_v1.pkl                          Models/component_models_v1.pkl
+                     (XGBoost+RandomForest per position)                    (src/components.py: 8 scoring
+                     + full hand-tuned rule layer                             events summed) + news-only
+                     [ACTIVE — flag is False]                                 rule layer [BUILT, NOT ACTIVE]
+                                       │                                                        │
+                                       └───────────────┐                        ┌──────────────┘
+                                                        ▼                        ▼
+                                                     final_xp, reasoning, ceiling_score
                                                                           │
                                                                           ▼
                                                                        app.py
-                                                        (4 tabs, all rendering logic, all UI state)
+                                                      (5 tabs: Predictions, Mini-League,
+                                                       Player History, Hall of Fame, Documentation)
+                                                                          │
+                                                                          ▼
+                                                       Sidebar: multi-GW projections.csv export
+                                                       (src/projections.py) for external MILP solvers
 
-Separately: vaastav GitHub historical CSVs ─→ src/features.py (fetch_full_history)
-            → non-leaky walk-forward `raw_xp` reconstruction
-            → used by Player History tab AND the Last Gameweek Recap
+Separately: vaastav historical CSVs + Understat ─→ src/features.py::fetch_full_history /
+            fetch_full_history_with_understat ─→ non-leaky walk-forward features
+            ─→ Player History tab, evaluation/backtest.py, training/*.py
 ```
 
-No database, no backend server beyond Streamlit itself, no message queue, no background jobs. Every "live" number is fetched fresh (subject to caching) on each page load/rerun.
+Still no database, no backend server beyond Streamlit, no message queue, no background jobs. The one new *external* dependency at request time is the Mini-League tab's calls to `leagues-classic/{id}/standings/` and `entry/{id}/event/{gw}/picks/` — both cached and paced (§9).
 
-## 5. Data sources — three distinct ones, each with a different trust model
+## 5. Data sources — now **four**, each with a different trust model
 
-**A. Live FPL REST API** (`src/data_loader.py::fetch_api_data`, `fetch_gameweek_history`, `fetch_player_live_summary`, `fetch_user_team`)
-- Endpoints used: `bootstrap-static/` (players, teams, gameweek events), `fixtures/`, `event/{gw}/live/`, `element-summary/{id}/`, `entry/{id}/event/{gw}/picks/`
-- The player/team/event/fixture payloads are **deliberately trimmed to an explicit field whitelist** before anything else touches them — stated in-code as reducing both memory and "security exposure." This has bitten the project twice already: two separate live features (DEFCON, then bonus/price/ownership, then penalty/xGI data) were implemented correctly in `features.py`/`predictor.py` but silently produced zeros until someone remembered to also add the new field name to this whitelist in `data_loader.py`.
-- Cached 1 hour (`@st.cache_data(ttl=3600)`).
+**A. Live FPL REST API** (`src/data_loader.py`) — unchanged endpoints plus new ones and new whitelisted fields:
+- New: `leagues-classic/{id}/standings/` (paginated, `page_standings=N`), `entry/{id}/event/{gw}/picks/` (used both for the existing single-user Rate My Team and, now, for every entry in a mini-league).
+- `ELEMENT_KEYS` grew substantially this round: `starts`, `starts_per_90`, `expected_goals_per_90`, `expected_assists_per_90`, `expected_goals_conceded_per_90`, `saves_per_90`, `clean_sheets_per_90`, `clearances_blocks_interceptions`, `tackles`, `recoveries`, `defensive_contribution`, `yellow_cards`, `red_cards` — all added to the whitelist *before* being wired into `features.py`, per this project's own hard-won rule (the whitelist has silently produced zeros on four separate past occasions when a field was used before being added here).
+- `_assert_whitelist_subset()` and `tests/test_whitelist.py` (added this round) turn a fifth such mistake into an immediate, loud `KeyError`/test failure instead of a silent zero.
+- Cached 1 hour for bootstrap-static, 60s for fixtures (unchanged); **900s (15 min) for the two new league endpoints** — explicitly requested, since that surface is rate-limited.
 
-**B. Historical per-gameweek CSVs** (`src/features.py::fetch_full_history`), from `github.com/vaastav/Fantasy-Premier-League` — a well-known community-maintained archive, covering 2022-23 through 2025-26.
-- This is the **only current source for the Last Gameweek Recap and the Player History tab**.
-- Rolling features (`rolling_3_minutes`, etc.) are computed via `.shift(1).rolling(3)` grouped by player+season — genuinely non-leaky, walk-forward-only features, unlike a since-removed "Backtest" tab that fed today's cumulative stats into a past gameweek's prediction (a real, previously-shipped, now-fixed data-leakage bug).
-- A real bug was found and fixed in this pipeline this week: the raw CSV has ~419 duplicate `(name, gameweek)` rows from genuine **double-gameweeks** (a club playing twice in one FPL gameweek), and the code used to silently `drop_duplicates(keep='first')`, discarding one entire fixture's points. Now aggregated (summed) instead.
-- Cached 1 hour.
+**B. Historical per-gameweek CSVs** (`src/features.py::fetch_full_history`), vaastav's archive, now covering **2021-22 through 2025-26** (one season further back than before). Substantially expanded this round:
+- Multi-horizon rolling features (windows 1/3/5/10/38, not just 3) for the original 6 stats plus 9 new "component" stats (`expected_goals`, `expected_assists`, `expected_goals_conceded`, `saves`, `bps`, `bonus`, `yellow_cards`, `red_cards`, `starts`).
+- Team **and opponent** rolling goals-for/against + a computed league rank — genuine opponent-strength signal beyond FPL's 1–5 FDR integer.
+- A **walk-forward Beta-Binomial shrinkage estimator** for DEFCON hit-rate (`defcon_hit_prob`) — a real statistical model (prior blended with each player's own cumulative hit/miss record), not a plain rolling mean, built specifically because DEFCON has no history before 2025-26 and a naive average would either have nothing to average (pre-2025-26) or overreact to 2-3 games of history early in 2025-26.
+- The multi-season CSV fetch is now **concurrent and timeout-guarded** (`ThreadPoolExecutor` + `requests.get(timeout=20)` instead of bare `pd.read_csv(url)`) — a real reliability fix found mid-session: an untimed fetch could hang indefinitely on a stalled connection, and a serial fetch let one slow season block every season after it.
+- `squad_depth_count` (same-position, same-team teammates who are themselves regular starters) computed identically here and live, for the minutes model.
 
-**C. Local committed CSVs** (`Data/Cleaned/model_ready_data.csv` and siblings) — used **only** as the pre-season baseline source, before Gameweek 1 has started, via a 5-tier matching cascade: Opta `code` → normalized full name → normalized first+web name → normalized web name → substring match → positional-median imputation for brand-new/promoted players. This exists because the live API resets cumulative per-gameweek stats at the start of a season, so there's nothing live to compute rolling features from yet.
+**C. Understat** (`src/understat.py`, new file, ~510 lines) — the fourth source:
+- Team-level (xG, xGA, PPDA, PPDA-allowed, Deep, Deep-allowed) scraped from `understat.com/getLeagueData/EPL/{year}` — the real internal JSON endpoint (found by inspecting network requests; the commonly-documented "`JSON.parse()` embedded in HTML" scraping method no longer works).
+- Player-level (xG, xA, xGChain, xGBuildup, key passes, shots) reused from vaastav's own bundled `data/{season}/understat/*.csv` files rather than scraped separately.
+- Matching reuses the same name-matching cascade as the pre-season baseline (§5D below), extended with a **6th "mononym" tier** for single-name players (Alisson, Casemiro, etc.), gated on uniqueness to avoid false positives.
+- **Verified match rates:** 100% team, 93.6% player (2024-25) — cleared the 90% bar this was built against. Remaining unmatched are genuinely hard cases (name truncations, nicknames, encoding artifacts in the source data) that were deliberately not chased further.
+- **Fails soft everywhere**: any Understat outage returns the app to FPL-only data with a logged warning, never a crash.
+- `fetch_full_history_with_understat()` is a deliberately **separate** function from `fetch_full_history()` — the live app's own feature computation never gains Understat's network dependency; only the offline training/backtest scripts call it.
+- **Not used for live serving** of the attacking component — see §5D.
 
-## 6. The prediction model
+**D. Live-vs-historical feature parity, and the Understat substitution.** A recurring design constraint this round: several new features only have a genuine walk-forward historical form (from a CSV), not an equivalent computed live from the FPL API alone, without expensive per-player calls. The resolution, applied consistently:
+- Where FPL's own live API now exposes a season-aggregate equivalent (e.g. `expected_goals_per_90` mirrors historical rolling `expected_goals`), that's used live, with the historical rolling value used for training — same semantics, different literal source, documented at each call site (`src/components.py::derive_component_inputs`).
+- Where no live equivalent exists at all (true match-by-match DEFCON hit/miss history), a different, principled live-only estimate is used instead (a Poisson threshold-crossing probability from the season rate) rather than reusing the historical walk-forward machinery unchanged.
+- This is also *why* Understat isn't used for live attacking predictions: it would require live-matching every player every page load, which failed reliability spot-checks earlier in the project's history (rate limiting, multi-minute fetch times) — FPL's own native xG/xA fields cover the same underlying signal without that cost.
+- Local committed CSVs (`Data/Cleaned/model_ready_data.csv`, pre-season baseline) — unchanged from the prior audit.
 
-- **Algorithm:** `sklearn.linear_model.LinearRegression`, trained offline in `Notebooks/3_Model_Training.ipynb`, serialized to `Models/linear_reg_v1.pkl`, loaded via `joblib`.
-- **7 input features**, all rolling-3-gameweek averages plus current price: `rolling_3_minutes`, `rolling_3_ict_index`, `rolling_3_creativity`, `rolling_3_influence`, `rolling_3_threat`, `rolling_3_total_points`, `value`.
-- **Training data:** 2021-22 through 2024-25 seasons; tested on early 2025-26.
-- **Reported metrics** (`metrics.json`): RMSE 2.16, R² 0.196 — but this was measured on a small, early-season slice of 2025-26. A full-season backtest (documented in this project's own `FUTURE_PLAN.md` from an earlier audit) found R² closer to 0.25–0.27 depending on the split, and — the important caveat — that **`rolling_3_minutes` alone recovers about 91% of that R²**. In plain terms: the statistical model is mostly a sophisticated "is this player actually going to play" detector, not a goal/assist predictor. `test_rules.py` exists specifically to quantify the rule layer's added value against this raw model, run as `python test_rules.py --season <season>`.
-- The model's raw output (`raw_xp`) is never shown to the user directly — only `final_xp`, after the rule layer below.
+## 6. The prediction models — **two, one active, one built and held back**
 
-## 7. The expert rule layer (`src/predictor.py::make_predictions`)
+### 6a. Production: per-position ensemble (`training/train_position_models.py`, `src/ensemble.py`)
 
-Applied per-player, in this order, to turn `raw_xp` into `final_xp`:
+- One `MedianEnsembleRegressor` (XGBoost + RandomForest, median-blended) **per position** (GKP/DEF/MID/FWD) — replaces the single all-positions `LinearRegression`, because a goalkeeper's points come overwhelmingly from saves/clean sheets and a forward's from xG; one linear model averaged across positions mostly just learned "did this player start" (minutes alone recovered ~91% of its R², per the prior audit).
+- **OpenFPL-style balanced sample weighting**: `KBinsDiscretizer` bins the target (2 bins for GK, 3 for DEF/FWD, 4 for MID) then `compute_sample_weight("balanced")`, clipped at the 95th percentile, rescaled to unit mean — specifically to stop the model collapsing toward the mean and never predicting a hauler.
+- **Team-grouped cross-validation** (`GroupKFold` on club, not a random split) during hyperparameter search, specifically to prevent a team's in-season form from leaking across train/validation folds.
+- Trained on 2021-22 through 2024-25, evaluated on 2025-26 (held out, never touched during training/tuning).
+- **Backtested result** (`evaluation/results/2025-26_position_models_v1.json`, vs. the legacy LinearRegression): Haulers RMSE 6.034→5.583 (**−7.5%**), Tickers RMSE 1.579→1.316 (**−16.7%**) — the two metrics this was built to improve — at the cost of Zeros RMSE 0.746→1.002 and Blanks RMSE 1.303→1.680 (both worse). This is reported as the **expected, correct trade-off**, not chased back down.
+- Two real training-pipeline bugs were found and fixed while building this: `n_jobs=-1` set on both the outer hyperparameter search and the inner estimator caused catastrophic CPU oversubscription (a 32-core search failed to finish GKP's tuning in 30+ minutes); and `RandomForestRegressor`'s `max_depth=None` grew near-one-leaf-per-row trees on the larger positions, the single biggest remaining slowdown once the first fix landed.
 
-1. **Hard availability wipe** — if `status` is `i` (injured) or `s` (suspended), or `chance_of_playing_next_round == 0`: **final_xp = 0.0** immediately, reasoning `"0.0 pts (Injured/Suspended)"`. Status `u` (unavailable — e.g. out on loan) also wipes to 0, labelled `"Unavailable"` separately since "Injured/Suspended" would misdescribe it.
-2. **Fixture difficulty bonus — MID/FWD only**: `+1.25` (FDR 1) / `+0.75` (FDR 2) / `−0.5` (FDR 4) / `−0.75` (FDR 5). *Not* applied to DEF/GKP any more — see clean sheet odds below.
-3. **Premium attacker multiplier**: `×1.15` if price ≥ £10.0m and position is MID/FWD.
-4. **Star captain bonus**: flat `+1.0` if price ≥ £10.0m and fixture difficulty ≤ 3.
-5. **Dynamic clean sheet odds — DEF/GKP only** (new this week, replacing a flat "+0.5 if FDR ≤ 2" step function): `cs_xp = cs_probability × 4.0`, where `cs_probability` is computed in `features.py` from each team's `strength_overall_home/away` rating vs. their specific opponent's, clamped to a **0.05–0.55** range around a 0.30 league-average baseline. Reasoning shows e.g. `"+ 1.5 (38% CS Odds)"`.
-6. **DEFCON bonus** (2025-26's real new scoring rule): stepped `+2.0 / +1.0 / +0.4` based on `defensive_contribution_per_90` (FPL's own season rate for combined clearances+blocks+interceptions+tackles, or +recoveries for MID/FWD) against the actual rule threshold (10 for DEF/GKP, 12 for MID/FWD). This is the single biggest reason budget defenders can still out-rank premium attackers in the main table (see §13).
-7. **Squad-depth rotation tax**: `−25%` applied only to non-nailed (starter probability < 90% and price < £9.0m) MID/FWD players at clubs computed to have 5+ other active attacking assets priced ≥ £5.5m — a dynamic stand-in for "this club rotates its attack," recomputed from live squad data every run rather than a hardcoded list of "big clubs."
-8. **Starter-probability multiplier**: a stepped curve on minutes-per-game (100% if ≥60 min/game, 75% if ≥45, 25% if ≥30, 5% otherwise) multiplies the whole subtotal.
-9. **Partial-injury-doubt multiplier**: if `chance_of_playing_next_round` is strictly between 0 and 100 (i.e. 25/50/75%), multiplies by that fraction directly (`0.25`/`0.5`/`0.75`).
-10. Final result clipped to `[0.0, 18.0]`.
+### 6b. Built, verified, and deliberately **not** active: the component pipeline (`src/components.py`, `training/train_component_models.py`)
 
-Every one of these steps is echoed into a human-readable `reasoning` string shown in the UI, e.g. `"5.6 pts = 3.2 (base xP) + 0.75 (easy fixture) × 1.15 (premium attacker form) + 1.0 (star captain)"`.
+A full restructuring away from "one regression predicts total points" toward predicting **each real scoring event separately and summing through the actual 2026/27 scoring matrix**:
 
-## 8. The captaincy engine — a *separate* ranking, not just top-of-list
+| Component | Method |
+|---|---|
+| Minutes (P(plays), P(60+)) | Two `LogisticRegression`s on rolling minutes, squad depth, starts rate, position |
+| Attacking (xG, xA) | FPL-native `expected_goals`/`expected_assists`, linearly calibrated against real goals/assists, scaled by predicted minutes |
+| Clean sheet | `LogisticRegression` on team/opponent rolling goals-for/against (replaces the old hand-tuned `0.30 + delta×0.08` formula) |
+| Goals conceded (new — the old model never had this) | Calibrated `expected_goals_conceded` rate × minutes fraction, −1 per 2 conceded, DEF/GKP only |
+| Saves | GK-only calibrated rate ÷ 3 |
+| DEFCON | `P(hits real threshold) × 2.0` from the walk-forward Beta-Binomial estimator (§5B) historically, a Poisson threshold-crossing estimate live |
+| Bonus | Regression on BPS rate **and** DEFCON hit-probability together (not assumed independent — 2026/27 recalibrated BPS specifically to reduce bonus for heavy-DEFCON matches) |
+| Cards | Small negative from each player's own rolling card-point rate |
 
-`render_captaincy_card` in `app.py` does **not** simply take the top-5 by `final_xp`. It:
-- **Filters eligibility** first: MID/FWD only, unless a DEF has real `expected_goal_involvements_per_90 > 0.30` (an actual attacking full-back, not a proxy metric).
-- **Ranks by a separate Ceiling Score**, computed in `predictor.py`: `final_xp × (1.25 if price ≥ £9.5m) × (1.15 if penalties_order == 1)`.
-- Deliberately does **not** hardcode "always show Haaland/Salah/Saka" — those names surface *because* the formula rewards being a genuine premium penalty-taker, which is more robust than a name list that goes stale the next time a club's penalty taker or a player's price changes.
-- This ranking is independent of the pitch-visualizer's own captain/vice-captain badges, which still use plain `final_xp` within that specific optimal-XI selection (a separate, narrower mechanism — not yet unified with the Ceiling Score, since it was out of scope when built).
+- Produces the exact reasoning-string format requested: `"5.6 = 2.0 appearance + 1.4 attack (0.31 xG, 0.19 xA) + 1.0 CS (38%) + 1.2 DEFCON (60% × 2)"` — every number in it is something a model actually computed, not a rule-layer constant.
+- The rule layer for this path is cut to **news overrides only**: injured/suspended/unavailable wipe to zero, plus a manual-override flag. The old fixture-difficulty bonus, premium multiplier, star-captain bonus, and rotation tax are deleted for this path, on the reasoning that the component models already learn that context from data.
+- **Multiple real bugs were found and fixed during this build** before any number could be trusted, notably: the attack calibration was initially regressing `expected_goals` against itself (not real goals scored) because the real-outcome columns were never added to the fetch; a per-90 rate conversion blew up to nonsensical values (max 54 "xG per 90") for players with a handful of recent minutes, fixed with a minimum-sample floor and a sane cap; and — the most consequential — **clean-sheet, DEFCON, and bonus points were originally credited to every owning player without discounting for their own chance of actually playing**, so a permanent benchwarmer at a strong defensive team was credited close to a starter's clean-sheet value; fixed by multiplying each of those components by the same minutes-fraction the attack/save components already used.
+- **Backtested result** (`evaluation/results/2025-26_component_models_v1.json`, vs. the *production* per-position ensemble, i.e. §6a — not the legacy LinearRegression): better on Zeros (1.002→0.740) and Blanks (1.680→1.386) and overall RMSE/MAE, but **worse on both metrics that were set as the bar**: Tickers RMSE 1.316→1.565 (+18.8%), Haulers RMSE 5.583→5.996 (+7.4%), plus a real drop in Spearman rank correlation (0.693→0.672) and top-10 overlap (1.2→1.0/GW).
+- **Consequently held behind `src/config.py::USE_COMPONENT_MODEL = False`.** Working hypothesis for the regression, stated in that file's own comment: the component calibrations are plain linear regressions, which regress toward the mean on a heavy-tailed target — the opposite of what §6a's balanced sample weighting was built to achieve for exactly the Haulers/Tickers buckets. Flipping this flag back on is a one-line change once that's addressed and re-verified — not on the strength of the Zeros/Blanks improvement alone.
+- `src/predictor.py::make_predictions()` dispatches between the two paths on this single flag; `app.py` never has to know which one is live.
 
-## 9. Features, tab by tab
+## 7. The rule layer — now genuinely two different rule layers
 
-**Tab 1 — 🔮 Predictions** (the main tab)
-- **Last Gameweek Recap**: predicted-vs-actual table + RMSE/players-tracked/top-performer metrics for the most recently *finished* gameweek, reconstructed entirely from the historical CSV pipeline (§5B) — no local storage, survives redeploys, and honestly reports "recap unavailable" rather than fabricating one if the source data isn't published yet.
-- **AI Team of the Week**: an optimal starting XI across all 8 valid FPL formations, selected via a club-cap-aware greedy fill (max 3 players per club — a real bug here was fixed this week: the old version sliced a fixed top-N per position independently and could reject every formation outright if one club dominated several positions at once), rendered as styled player cards on a pitch graphic with gold (C) / silver (V) badges.
-- **Top Captain Picks**: the 5-row Ceiling-Score-ranked table described in §8, with star ratings and a plain-English rationale column (home/away, FDR band, penalty-taker flag, price tier, or — for eligible defenders — their specific xGI/90 number).
-- **Predicted Points table**: a clean 6-column core view (Player, Team, Opponent, Pos, Predicted Points, Reasoning) with Position/Team filters and a search box; secondary stats (DEFCON/90, Bonus, BPS, Price, Price Δ today, Ownership %, FDR) live in a collapsed "📊 View Underlying Defensive & Bonus Metrics" expander rather than cluttering the main table.
-- **5-Gameweek FDR Ticker**: all 20 clubs' next 5 opponents, colour-coded by FPL's own difficulty rating, sorted by easiest run.
-- **Rate My Team**: enter an FPL Team ID (now **persisted to the URL** as `?team_id=...` so the dashboard is bookmarkable) to get: total projected starting-XI points, the weakest starting link, a bench-optimization alert (is a benched player projected higher than a starter, formation-legality checked), one recommended sell→buy transfer (budget- and 3-per-club-aware), and the full 15-man squad breakdown with role badges (Captain/Vice/Starter/Bench).
+- **Position-ensemble path (active)**: essentially the full hand-tuned rule layer from the previous audit — fixture-difficulty bonus, premium multiplier, star-captain bonus, dynamic clean-sheet odds, DEFCON stepped bonus, squad-depth rotation tax, starter-probability and partial-injury multipliers. Unchanged in this round *except* it now sits behind the dispatcher rather than being the only path.
+- **Component path (built, inactive)**: cut down to hard availability wipe (injured/suspended/unavailable/manual override) only, described in §6b.
 
-**Tab 2 — 📊 Player History**: pick any player and season, see a predicted-vs-actual line chart and table across their whole history, built from the same non-leaky historical pipeline, with a live-season overlay computed from the FPL element-summary endpoint for the current season's most recent gameweeks.
+## 8. The captaincy engine
 
-**Tab 3 — 🏆 Hall of Fame**: **fully static, hand-curated data** (Rooney/Lampard/Salah career totals, Salah/Suárez/Ronaldo single-season records) — not live, not model-derived, not connected to any data source. Purely a content/nostalgia feature.
+Unchanged mechanism from the previous audit (eligibility filter, separate Ceiling Score ranking, deliberately not a hardcoded name list) — both prediction paths feed the same downstream `ceiling_score`/`ceiling_stars` logic in `src/predictor.py`, so this doesn't fork with the model dispatch.
 
-**Tab 4 — ℹ️ Documentation**: in-app architecture summary, a capabilities/limitations list (the limitations list is honest — it says the expert heuristic layer trades some raw accuracy for better top-20 ranking utility), and credits.
+## 9. Features, tab by tab — now **five** tabs
 
-**Sidebar**: system status (which gameweek is active / pre-season), timezone selector (used to localize deadlines and kickoff times across the whole app), model diagnostics (RMSE/R² from `metrics.json`).
+**Tab 1 — 🔮 Predictions**: Season Points Explorer (replaced the old "Last Gameweek Recap," which compared an unshown internal model output against actuals and was judged not meaningful — this is a live, fully-recomputable, redeploy-safe search-and-drill-down over the current season instead), AI Team of the Week, Top Captain Picks, Predicted Points table, 5-GW FDR Ticker, Rate My Team — all as in the previous audit, now running on whichever model `src/config.py` selects.
+
+**Tab 2 — 🏟️ Mini-League** *(new this round)*:
+- League ID input, persisted to `?league_id=...` (mirrors `?team_id=...`'s existing pattern) so a league dashboard is bookmarkable/shareable.
+- **Standings** for every entry retrieved (paginated, capped at 500/10 pages with a visible truncation note for anything larger).
+- **Per-manager projected points and captain** for the upcoming gameweek, computed by fetching each entry's actual picks and running the app's own predictions against them — capped at the top 60 entries by rank for squad-level detail (with a visible note), to keep load times reasonable against a rate-limited endpoint.
+- **Effective ownership**: each owning manager weighted by their real multiplier that gameweek (captain ×2, triple-captain ×3, benched ×0) — explicitly the "useful number" requested, since it can exceed 100% (verified live: Haaland at 93.3% raw ownership showed 190% effective ownership in a real league, because nearly everyone who owns him also captains him) and directly answers "which of my players move me up or down *this* league."
+- **Differentials**: the full predicted player pool (not just players someone in the league owns — a 0%-owned gem is exactly the case that matters and would otherwise disappear), filtered to under 30% league ownership, sorted by projected xP.
+- A private or nonexistent league returns a clear warning, not a stack trace — verified live against both a real public league and a deliberately invalid ID.
+- One real interoperability bug found and fixed while verifying this: initial gameweek-numbering used this app's own "current gameweek" convention (`is_current`-first), which disagrees by one with the real solver's convention (see §9, Sidebar) during a live gameweek — not relevant to this tab specifically, but the same underlying "which gameweek is 'now'" question came up twice this round (see Sidebar entry below).
+
+**Tab 3 — 📊 Player History**, **Tab 4 — 🏆 Hall of Fame**, **Tab 5 — ℹ️ Documentation**: unchanged from the previous audit.
+
+**Sidebar — 📤 Multi-GW Projections Export** *(new this round)*:
+- Horizon input (default 5 gameweeks), a "Generate projections" button, then a CSV download button.
+- Runs the app's own prediction pipeline once per gameweek in the horizon (fixture/opponent context is genuinely gameweek-specific; form features are frozen at today's values, stated explicitly in the UI caption — "the further out a gameweek is, the more its number is really just current form against that fixture").
+- Blank gameweeks (a team with no fixture) are reported as 0, not a fixture-blind guess. Double gameweeks are scored as a single fixture — a stated, not silently absorbed, limitation.
+- **Column format was fetched and verified against the real solver's own parser code**, not guessed from its README (which documents solver *settings*, not the CSV layout): `ID`/`Name`/`Team`/`Pos`(single-letter)/`Value` + one `{gw}_Pts`/`{gw}_xMins` pair per gameweek, `gw` being the real absolute FPL gameweek number.
+- **Verification went further than reading code**: the actual `solioanalytics/open-fpl-solver` repo was cloned, its real dependencies installed, and its real `prep_data()` **and** `solve_multi_period_fpl()` (the actual MILP solve) were run end-to-end against a CSV this app generated live — with zero manual edits to the file. This caught a real bug (the gameweek-numbering convention mismatch mentioned above) before it shipped: the app's own `is_current`-first convention put the export one gameweek behind what the solver's `is_next`-only convention expected during a live gameweek, producing an actual `ValueError` on the first attempt. Fixed to match the solver's convention specifically for this export.
 
 ## 10. Branding & design system
 
-- Font stack loaded via Google Fonts `<link>`, injected once near the top of `app.py` with CSS custom properties (`--font-display`, `--font-body`, `--font-mono`) and `!important` overrides against Streamlit's own emotion-generated classes.
-- A real bug was hit and fixed here: an early version of the font CSS included a blanket `span` selector, which broke Streamlit's icon glyphs (rendered as ligature text in a dedicated icon font) — expander chevrons showed as the literal text `arrow_right`. Fixed by excluding `span` from the override.
-- Color tokens: navy ground/surface, garnet accent, gold for captain/star/heading emphasis specifically (not used generically), with **semantic colors kept deliberately separate from the brand palette** — the FDR ticker's green/purple/red/pink bands, and the Sell(red)/Buy(green) transfer tags, were left untouched during the rebrand on purpose, so brand and meaning never collide.
-- All custom HTML/CSS blocks route through a single `render_html()` helper that strips leading whitespace per line — necessary because Streamlit's markdown renderer runs CommonMark first, and any line indented 4+ spaces gets treated as a preformatted code block, printed as literal text instead of parsed as HTML. This exact bug (raw CSS dumping onto the page as visible text) was found and fixed in the pitch visualizer, the transfer recommendation card, and the footer.
+Unchanged from the previous audit.
 
-## 11. Security posture
+## 11. Security & deployment posture
 
-- `security_audit.py` runs `pip-audit` against `requirements.txt` for known CVEs (a manual/CI script, not run automatically on every deploy).
-- Search input is sanitized (`sanitize_search_input` strips to alphanumeric+spaces, and the search itself uses `re.escape`) before being used in a regex `.str.contains()` filter, specifically to prevent regex injection or crashes from adversarial search input.
-- The live API payload is trimmed to an explicit field whitelist before any processing touches it (stated purpose: reduce both memory footprint and "security exposure" from an otherwise much larger, unvetted third-party JSON blob).
-- `.gitignore` covers `.env`/`.env.*`, `.streamlit/secrets.toml`, `.venv/`, `__pycache__/`, `.DS_Store`, and now new (untracked) `*.csv` files — though the 6 CSVs already committed to the repo remain tracked (a `.gitignore` rule never retroactively untracks a file already in git).
-- No authentication, no secrets currently in use by the app (it calls only unauthenticated public FPL endpoints), so there is no credential-handling surface today.
+- Whitelist-assertion safety net (§5A) and `tests/test_whitelist.py` are new hardening since the previous audit, directly targeting a bug class that had already recurred four times.
+- **Deployment-constraint discipline held throughout this round's much larger feature set**: every new cache (Understat, league standings, entry picks) uses `st.cache_data` with an explicit TTL, never a local file write-and-read-back; the historical CSV fetch was made concurrent/timeout-guarded rather than persisted; the two new trained model files (`Models/position_models_v1.pkl`, `Models/component_models_v1.pkl`) are loaded via `joblib` from the repo, same pattern as the pre-existing `linear_reg_v1.pkl`, not regenerated or cached to local disk at runtime.
+- No new authentication surface. The Mini-League tab reads only the same public, unauthenticated FPL endpoints as everything else; a private league correctly fails closed (§9) rather than exposing anything.
+- `.gitignore` gained a `*.csv` rule and `.env`/`.env.*` this round (existing committed CSVs stay tracked; this only stops *new* untracked CSVs from being added by accident).
 
-## 12. Bugs found and fixed during this engagement (chronological)
+## 12. Bugs found and fixed this round (in addition to the 9 already documented from the previous audit)
 
-This list matters because several of these were subtle and could easily still be present in a similar codebase — worth knowing what class of bug to watch for:
-
-1. Streamlit markdown-as-code-block bug leaking raw CSS/HTML onto the page as visible text (pitch visualizer, transfer card, footer).
-2. Captaincy table showing literal `**bold**` markdown syntax — `st.dataframe` never interprets markdown inside cells.
-3. **Gameweek-resolution bug**: `is_next` was checked before `is_current`, so the app jumped to predicting *next* week's gameweek the instant a deadline passed — even while the current gameweek's matches hadn't been played yet. Fixed to prioritize `is_current`. This bug existed in two independent places (`features.py` and a duplicate lookup in `app.py`'s deadline banner) and both needed the fix for the UI to stay internally consistent.
-4. **Team-of-the-week club-cap rejection**: greedy top-N-per-position selection could produce >3 players from one club in every one of the 8 candidate formations simultaneously, causing the whole feature to silently render nothing. Fixed with a club-cap-aware greedy fill.
-5. Data field whitelist in `data_loader.py` silently dropping newly-added fields (DEFCON, then bonus/price/ownership, then penalty/xGI data) each time a new feature was added elsewhere — three separate incidents of the same root cause.
-6. An earlier **local-JSON-snapshot recap design** was built, then deliberately replaced this week after recognizing it would be wiped on every Streamlit Cloud redeploy — rebuilt on the historical-CSV pipeline instead, which needs no persistence at all.
-7. **Double-gameweek data loss**: `drop_duplicates(keep='first')` on the historical CSV silently discarded one full fixture's points/minutes whenever a club played twice in one FPL gameweek. Fixed via sum-aggregation.
-8. Budget-defender bias in captaincy suggestions (a nailed £4.5m defender with an easy fixture could outrank Haaland) — fixed via the eligibility filter + Ceiling Score in §8. A **related, only partially resolved** version of this bias still exists in the *main* predictions table due to DEFCON's flat scoring (see §13).
-9. A font-CSS regression that broke Streamlit's own icon rendering (`span` override clobbering the icon font) — caught and fixed same-session.
+1. **Attack calibration self-regression** — `expected_goals` was being regressed against itself instead of real `goals_scored`/`assists`, because the real-outcome columns were never pulled from the historical CSV. Fixed by adding them and recalibrating.
+2. **Per-90 rate blow-up** — dividing a real stat total by a near-zero recent-minutes sample extrapolated to nonsensical per-90 rates (max observed: 54). Fixed with a minimum-sample floor and a physically-sane cap.
+3. **Goals-conceded calibration corrupted by benched-player rows** — a benched player's zero input was paired against their team's real (nonzero) result, dragging the fit toward "just predict the league average." Fixed by filtering the fit to rows where the player actually played.
+4. **Clean-sheet/DEFCON/bonus over-crediting bench players** — the single most consequential bug of this round (§6b): none of these three components were scaled by the player's own chance of playing, so a permanent benchwarmer at a strong defensive team scored close to a nailed starter's clean-sheet value. Found via a direct GKP-position sanity check (predicted mean nearly double the actual mean) before it reached the backtest report.
+5. **Hyperparameter-search CPU oversubscription** — `n_jobs=-1` on both the outer search and inner estimator turned a tunable search into one that couldn't finish in 30+ minutes on a 32-core machine. Fixed by setting the inner estimator to `n_jobs=1`.
+6. **`RandomForestRegressor(max_depth=None)`** growing nearly one leaf per training row on the larger positions — the dominant remaining slowdown after fix #5, and a textbook overfit regardless. Fixed by capping depth.
+7. **Untimed, serial multi-season CSV fetch** — `pd.read_csv(url)` has no timeout and can hang indefinitely on a stalled connection; fetching seasons one at a time let one slow season block every season after it. Fixed with `requests.get(timeout=...)` + concurrent fetching.
+8. **Solver export gameweek-numbering mismatch** — this app's `is_current`-first "what's the current gameweek" convention disagreed by one with the target solver's `is_next`-only convention during a live gameweek, producing a real `ValueError` verified against the actual solver code. Fixed to match the solver's own convention for that specific export.
+9. Two false-positive-masking bugs in the (separate, earlier-in-session) Understat integration: an empty fetch reporting a match rate of `1.0` (perfect) instead of `0.0` (nothing to report), and a duplicate-column `groupby` crash from not dropping the original `team` column before a rename.
 
 ## 13. Known limitations, stated honestly
 
-- **DEFCON can still let budget defenders outrank premium attackers in the main table.** Confirmed today: Haaland (5.59 xP) now correctly edges the specific defender (Ajer, 5.57 xP) originally flagged as an example of this bias — but two *other* sub-£5m defenders (Justin 5.97, Muharemović 5.88) still rank above Haaland, because DEFCON's flat `+2.0` cap is exactly as reachable for a £4.5m defender as for anyone. This was not part of the most recent fix's scope (which targeted availability handling and clean-sheet modelling specifically) and remains open.
-- **Clean sheet odds run on a coarser team-strength signal than intended**, because FPL hasn't populated the granular attack/defence strength fields yet this season (§2). The code is already written to prefer those fields automatically once they go live — no further change needed when that happens.
-- **The pitch-visualizer's captain/vice badges and the Top Captain Picks card can disagree** — they're two different mechanisms (plain `final_xp` for the pitch, Ceiling Score for the captaincy card) that were never unified.
-- **The historical recap compares `raw_xp` (the bare statistical model), not `final_xp`** (the full rule-adjusted number shown live) — reconstructing the entire rule layer's historical context (what the fixture difficulty, rotation risk, and DEFCON rate *were* for that specific past gameweek) was judged a larger undertaking than reusing data already fetched for the Player History tab. Stated plainly in the recap's own docstring.
-- **Rate My Team's transfer suggestion is single-gameweek and greedy** — it does not consider saving a free transfer, taking a hit, or planning around a future fixture swing.
-- **The rule layer's constants are hand-tuned, not fitted.** Thresholds like "£9.5m = premium," "£10.0m = star bonus," "5+ attackers = deep squad" are domain judgment calls, not statistically optimized cutoffs. `test_rules.py` exists to at least measure whether the whole rule layer helps or hurts against the raw model on held-out data.
+Carried over from the previous audit where still true, plus new ones from this round:
+
+- DEFCON can still let budget defenders outrank premium attackers in the **active** (position-ensemble) rule layer's main table — unchanged, not in scope this round.
+- Clean-sheet odds in the **active** rule layer still run on the coarser always-populated team-strength field, not the granular one — unchanged.
+- The pitch-visualizer's captain/vice badges and the Top Captain Picks card can still disagree — unchanged.
+- Rate My Team's transfer suggestion is still single-gameweek and greedy — **but the app now offers an explicit off-ramp** to a real multi-gameweek solver (§9, Sidebar) rather than only disclosing the limitation.
+- **The component pipeline (§6b) is fully built, fully verified, and not live** — it is worse on Haulers/Tickers RMSE than what's actually running. This is the single most important "don't assume" fact about the current state of prediction quality: the more architecturally interesting model is not the one serving predictions.
+- **A double gameweek is scored as a single fixture** in both the live app's existing fixture-aware logic and the new solver-export CSV — a team playing twice in one FPL gameweek under-counts that player's true expected total for that gameweek. Stated in the export's UI caption; not fixed this round.
+- **Mini-League squad-level detail is capped at the top 60 entries by rank** (standings themselves go up to 500) — a genuinely huge mini-league won't get per-manager projections/ownership for everyone, by design, to keep load times reasonable against a rate-limited endpoint.
+- The rule layer's constants in the **active** path are still hand-tuned, not fitted — unchanged; this is precisely the property the component pipeline (§6b) was built to remove, and precisely why its current backtest regression matters.
 
 ## 14. Tech stack
 
-Python · Streamlit ≥1.35 · pandas ≥2.2 · numpy ≥1.26 · scikit-learn ≥1.4 · joblib · plotly ≥5.18 · pyarrow ≥15.0 (fast CSV parsing for the historical pipeline, with a plain-pandas fallback if unavailable) · requests · pip-audit (dev/audit only). No JavaScript, no separate frontend framework — Streamlit renders the entire UI server-side.
+Adds to the previous list: **XGBoost**, **scipy** (Beta-Binomial/Poisson estimators, Spearman rank correlation), **GitHub CLI** (used this session for PR creation, not an app dependency). Everything else — Streamlit, pandas, numpy, scikit-learn, joblib, plotly, pyarrow, requests — unchanged.
 
-## 15. Repository layout
+## 15. Repository layout (current)
 
 ```
-app.py                  1,342 lines — the entire UI + orchestration
+app.py                          1,641 lines — 5-tab UI + orchestration + sidebar export
 src/
-  data_loader.py          195 lines — API fetching, payload trimming, timezone utils
-  features.py             399 lines — process_data (live), fetch_full_history (historical)
-  predictor.py            210 lines — model + rule layer + captaincy scoring
-Models/linear_reg_v1.pkl        — trained LinearRegression, joblib-serialized
-Data/Raw/, Data/Cleaned/        — committed historical CSVs (pre-season baseline source only)
-Notebooks/                      — cleaning, feature engineering, training, prediction (offline, not run by the app)
-metrics.json                    — {rmse, r2, notes} shown in the sidebar
-test_rules.py                   — standalone script: does the rule layer help vs. raw_xp?
-security_audit.py               — standalone script: pip-audit wrapper
-.streamlit/config.toml          — Blaugrana theme tokens
-FUTURE_PLAN.md                  — an earlier full audit/roadmap document (pre-dates several fixes above)
+  data_loader.py                  418 lines — API fetching (incl. league/picks), whitelist, tz utils
+  features.py                     909 lines — process_data (live), fetch_full_history(_with_understat)
+  predictor.py                    402 lines — dispatcher + both rule layers + captaincy scoring
+  components.py                   441 lines — the 8-component prediction pipeline (inactive)
+  ensemble.py                      32 lines — MedianEnsembleRegressor
+  config.py                        32 lines — USE_COMPONENT_MODEL flag
+  projections.py                  153 lines — multi-GW solver CSV export
+  understat.py                    510 lines — 4th data source
+training/
+  train_position_models.py        277 lines — fits the active per-position ensemble
+  train_component_models.py       247 lines — fits the inactive component pipeline
+evaluation/
+  backtest.py                     637 lines — walk-forward, outcome-bucketed, model-vs-model comparisons
+  results/*.json                          — recorded backtest runs, one per model/feature-set
+Models/
+  linear_reg_v1.pkl                       — legacy, kept only for backtest comparison
+  position_models_v1.pkl                  — ACTIVE production model
+  component_models_v1.pkl                 — built, verified, not served (see §6b)
+tests/
+  test_whitelist.py, conftest.py          — live-API whitelist safety net
+Data/Raw/, Data/Cleaned/, Notebooks/, metrics.json, .streamlit/config.toml — unchanged from prior audit
 ```
 
-## 16. Current state (uncommitted)
+## 16. Current state
 
-As of this analysis, `git status` shows **uncommitted changes** to `.gitignore`, `app.py`, `src/data_loader.py`, `src/features.py`, and `src/predictor.py` — this is the strict-availability + dynamic-clean-sheet-odds work from the most recent request, verified working locally but not yet pushed to `main` or deployed. The live app at `apexfpl.streamlit.app` currently reflects commit `d6463b8`, one commit behind this.
+On branch `feature/multi-model-group-tools`, commit `34e85e0`, with **PR #1 open against `main`** (ready for review, not a draft). Working tree is clean — everything described in this document is committed and pushed. The live deployment at `apexfpl.streamlit.app` has not yet been updated to this branch/PR.
 
 ## 17. Honest bottom line
 
-This is a real, working, moderately sophisticated hobby/portfolio project with a genuinely interesting hybrid architecture (statistical model + explainable domain-rule layer) and an unusually high density of *fixed, documented, verified* bugs for its size — a sign it's been iterated on carefully rather than left to rot. Its accuracy ceiling is set by a deliberately simple linear model, not by the rule layer, which is honestly disclosed in the app's own Documentation tab. It is not, and doesn't claim to be, a production-grade commercial product: no auth, no persistence, no SLA, unofficial data source, single maintainer.
+The scope of this project roughly quadrupled in one extended session without a corresponding drop in rigor: every new model was backtested (not just built), every new external-format claim was verified against the real target's own code (not its README), and the one model that looked architecturally more honest — predict-each-scoring-event-and-sum, with genuinely computed reasoning strings — was still held back because it measured worse on the metrics that actually matter for this app's purpose. That's the single fact most worth carrying forward: **the more interesting model isn't the one running.** Everything else — Understat, the group/league features, the solver handoff — is additive and shipped. Still not a production-grade commercial product: no auth beyond a shareable URL, no persistence, no SLA, unofficial data sources, single maintainer.

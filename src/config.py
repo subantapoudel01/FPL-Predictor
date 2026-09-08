@@ -30,3 +30,16 @@ USE_COMPONENT_MODEL = False
 # buckets. Flip this back to True only after that's addressed and
 # re-verified, not on the strength of the Zeros/Blanks/overall improvement
 # alone.
+#
+# A second, independent issue a later code review found and left
+# unresolved (also to be fixed before flipping this): src/components.py::
+# predict_bonus's p_defcon feature means two different things depending on
+# whether the row is historical or live -- fit_bonus_model trains against
+# the historical walk-forward Beta-Binomial estimate (defcon_hit_prob),
+# but predict_defcon's live branch feeds the same feature name a Poisson
+# threshold-crossing estimate from a season-aggregate rate instead. The
+# backtest never exercises the live branch, so this distribution mismatch
+# wouldn't show up there even after the Haulers/Tickers regression above
+# is fixed -- it needs its own live-vs-historical calibration (matching
+# the pattern already used for the attack/goals-conceded/saves
+# components) before this flag is trustworthy in production.

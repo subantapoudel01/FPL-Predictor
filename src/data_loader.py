@@ -1,4 +1,5 @@
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import pandas as pd
 import streamlit as st
@@ -345,15 +346,33 @@ def fetch_entry_picks(entry_id, gw):
         return None
 
 
-def fetch_league_squads(entry_ids, gw):
+def fetch_league_squads(entry_ids, gw, max_workers=5):
     """
-    Fetches every entry's picks for `gw`, one at a time (each individual
-    call is itself cached and paced -- see fetch_entry_picks). Returns
-    {entry_id: picks_dict_or_None}; a None value means that one manager's
-    squad couldn't be retrieved and callers should skip them, not fail
-    the whole league view over one manager's unavailable picks.
+    Fetches every entry's picks for `gw`, concurrently but capped at
+    `max_workers` in flight (each individual call is itself cached and
+    paced -- see fetch_entry_picks's own 0.15s pre-request sleep). Purely
+    sequential fetching here once blocked the Streamlit script thread for
+    30-60+ seconds on a 60-manager league (found by code review); a small
+    worker pool -- not the wide-open concurrency this project's Understat
+    integration used and got rate-limited by (see src/understat.py's own
+    history) -- cuts that roughly in proportion to max_workers while still
+    keeping the per-connection request cadence fetch_entry_picks already
+    paces.
+
+    Returns {entry_id: picks_dict_or_None}; a None value means that one
+    manager's squad couldn't be retrieved and callers should skip them,
+    not fail the whole league view over one manager's unavailable picks.
     """
-    return {entry_id: fetch_entry_picks(entry_id, gw) for entry_id in entry_ids}
+    results = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(fetch_entry_picks, entry_id, gw): entry_id for entry_id in entry_ids}
+        for future in as_completed(futures):
+            entry_id = futures[future]
+            try:
+                results[entry_id] = future.result()
+            except Exception:
+                results[entry_id] = None
+    return results
 
 
 # --- TIMEZONE CONVERSION UTILITIES ---

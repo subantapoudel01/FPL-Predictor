@@ -904,7 +904,20 @@ def fetch_full_history_with_understat():
             'first_name': split[0],
             'second_name': split[1] if split.shape[1] > 1 else '',
         }).fillna('')
-        names_df['web_name'] = names_df['first_name']
+        # fetch_full_history()'s own "name" column (the vaastav join key)
+        # is a full "First Last" name -- there's no real FPL web_name (the
+        # short display name, usually the surname) in this historical
+        # source to give match_player_name(). The surname (second_name) is
+        # at least a semantically honest stand-in, unlike the previous
+        # `= first_name` (a nonsensical duplicate of a field already used
+        # elsewhere in the same call). NOTE: as of the code review that
+        # caught this, src/understat.py::match_understat_players doesn't
+        # actually read this column at all -- wiring it in was tried and
+        # reverted after it measurably regressed the real match rate (see
+        # that function's own comment) -- so this line is presently
+        # cosmetic, not a match-rate fix, and is being kept only because
+        # `= first_name` was actively misleading to read.
+        names_df['web_name'] = names_df['second_name']
         fpl_names_by_season[season] = names_df
 
     return attach_understat_features(df, fpl_names_by_season)

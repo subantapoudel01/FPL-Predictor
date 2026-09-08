@@ -362,6 +362,19 @@ def match_understat_players(understat_player_df, fpl_names):
     # name_index keyed by normalized full name -> canonical FPL `name`
     # (the exact join key fetch_full_history() uses), built the same way
     # _load_historical_baselines() builds its own index.
+    #
+    # NOTE: this docstring says fpl_names carries a web_name column, and
+    # code review flagged that this function never actually reads it --
+    # true, and *tried and reverted*: adding web_name-alone keys to
+    # name_index (gated on uniqueness across the roster) measurably
+    # REGRESSED the real match rate on 2024-25 data (35 unmatched vs. 33
+    # before, zero net gains) -- extra index entries increased the odds of
+    # a substring collision in match_player_name's separate mononym-
+    # fallback tier (which counts *all* substring hits for a single-name
+    # Understat player like "Thiago"), breaking two previously-unique
+    # mononym matches for no offsetting improvement anywhere. Left
+    # unused deliberately now, not silently -- see the code review this
+    # comment traces back to for the verified before/after numbers.
     name_index = {}
     for _, r in fpl_names.iterrows():
         full = f"{r['first_name']} {r['second_name']}".strip()

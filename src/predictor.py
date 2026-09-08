@@ -69,6 +69,47 @@ def load_active_model():
     return load_component_models() if config.USE_COMPONENT_MODEL else load_position_models()
 
 
+def _resolve_availability(row):
+    """
+    Shared availability logic for both prediction paths (position-ensemble
+    and component) -- CLAUDE.md documents this as step 2 of the pipeline,
+    "before any other rule runs," and it used to be two independently
+    hand-copied implementations that had already drifted: a code review
+    found the manual-override flag only worked on the component path, and
+    the partial-injury-doubt scaling only worked on the position-ensemble
+    path -- each one missing on whichever path nobody was looking at,
+    since USE_COMPONENT_MODEL only ever exercises one of them in
+    production at a time. One implementation now, used by both.
+
+    Returns a dict:
+      {'hard_wipe': True, 'reasoning_suffix': str} -- final_xp must be 0.0,
+        the caller should stop and use reasoning_suffix as-is (already
+        includes "0.0 pts (...)").
+      {'hard_wipe': False, 'chance': float, 'has_partial_injury': bool,
+       'injury_factor': float} -- continue; multiply whatever subtotal the
+        caller computes by injury_factor (1.0 when there's no partial
+        doubt, chance/100 when there is).
+    """
+    status = str(row.get('status', 'a')).lower() if pd.notna(row.get('status')) else 'a'
+    chance_val = row.get('chance_of_playing_next_round', row.get('chance_of_playing', 100))
+    try:
+        chance = float(chance_val) if pd.notna(chance_val) else 100.0
+    except (ValueError, TypeError):
+        chance = 100.0
+    manual_override = bool(row.get('manual_unavailable_override', False))
+
+    if manual_override:
+        return {'hard_wipe': True, 'reasoning_suffix': "0.0 pts (Manual override)"}
+    if chance == 0 or status in ['i', 's']:
+        return {'hard_wipe': True, 'reasoning_suffix': "0.0 pts (Injured/Suspended)"}
+    if status == 'u':
+        return {'hard_wipe': True, 'reasoning_suffix': "0.0 pts (Unavailable)"}
+
+    has_partial_injury = (0 < chance < 100)
+    injury_factor = (chance / 100.0) if has_partial_injury else 1.0
+    return {'hard_wipe': False, 'chance': chance, 'has_partial_injury': has_partial_injury, 'injury_factor': injury_factor}
+
+
 def ceiling_stars(ceiling_scores: pd.Series) -> pd.Series:
     """
     Star rating for the Top Captain Picks card, scaled against this
@@ -95,17 +136,21 @@ def make_predictions(df, model, is_preseason=False):
     (final_xp, reasoning, ceiling_score, etc.) so app.py never needs to
     know which one ran.
 
-    True (default): the component pipeline (_make_predictions_component)
-    -- src/components.py predicts each scoring event separately (minutes,
+    True: the component pipeline (_make_predictions_component) --
+    src/components.py predicts each scoring event separately (minutes,
     attacking, clean sheet, DEFCON, bonus, cards) and sums them through the
     real 2026/27 scoring matrix; the rule layer is cut down to real news
-    overrides only.
+    overrides only. Built and verified, but currently NOT the live
+    default -- see src/config.py's own comment: it backtested worse than
+    the ensemble below on Haulers/Tickers RMSE, the two metrics that
+    matter most for this app.
 
-    False: _make_predictions_position_ensemble, the previous architecture
-    (one XGBoost+RandomForest ensemble per position, predicting
-    total_points directly, plus a hand-tuned rule layer of fixture bonus/
-    premium multiplier/star bonus/rotation tax on top). Kept as a config
-    flag, not deleted, specifically so this can be rolled back in one line
+    False (current default -- src/config.py::USE_COMPONENT_MODEL): the
+    position-ensemble path below, the previous architecture (one
+    XGBoost+RandomForest ensemble per position, predicting total_points
+    directly, plus a hand-tuned rule layer of fixture bonus/premium
+    multiplier/star bonus/rotation tax on top). Kept as a config flag, not
+    deleted, specifically so this can be rolled forward in one line
     if the component pipeline ever backtests worse -- see
     evaluation/backtest.py's component-vs-position-ensemble comparison for
     the numbers that should decide which one is live.
@@ -141,34 +186,28 @@ def _make_predictions_component(df, model, is_preseason=False):
 
     def apply_news_override(row):
         prefix = "(Prior season baseline) " if is_preseason else ""
-        status = str(row.get('status', 'a')).lower() if pd.notna(row.get('status')) else 'a'
-        chance_val = row.get('chance_of_playing_next_round', row.get('chance_of_playing', 100))
-        try:
-            chance = float(chance_val) if pd.notna(chance_val) else 100.0
-        except (ValueError, TypeError):
-            chance = 100.0
-        manual_override = bool(row.get('manual_unavailable_override', False))
-
-        if manual_override:
-            reasoning = f"{prefix}0.0 pts (Manual override)"
-            return pd.Series([0.0, reasoning], index=['final_xp', 'reasoning'])
-        if chance == 0 or status in ['i', 's']:
-            reasoning = f"{prefix}0.0 pts (Injured/Suspended)"
-            return pd.Series([0.0, reasoning], index=['final_xp', 'reasoning'])
-        if status == 'u':
-            reasoning = f"{prefix}0.0 pts (Unavailable)"
-            return pd.Series([0.0, reasoning], index=['final_xp', 'reasoning'])
+        avail = _resolve_availability(row)
+        if avail['hard_wipe']:
+            return pd.Series([0.0, f"{prefix}{avail['reasoning_suffix']}"], index=['final_xp', 'reasoning'])
 
         raw_val = float(row.get('raw_xp', 0.0)) if pd.notna(row.get('raw_xp')) else 0.0
-        final_xp = float(np.clip(raw_val, 0.0, 18.0))
+        # Partial injury doubt (chance_of_playing_next_round at 25/50/75%)
+        # scales the component sum the same way it scales the
+        # position-ensemble path's subtotal -- this isn't one of the
+        # hand-tuned constants the component redesign was built to remove
+        # (fixture bonus/premium/rotation tax); it's FPL's own literal
+        # published percentage used directly as a probability multiplier,
+        # so it stays in both paths' rule layer.
+        adjusted_val = raw_val * avail['injury_factor']
+        final_xp = float(np.clip(adjusted_val, 0.0, 18.0))
         reasoning_text = str(row.get('reasoning', '') or '')
         if abs(final_xp - raw_val) > 0.05 and ' = ' in reasoning_text:
-            # Clipping changed the total (a genuinely rare edge case --
-            # heavy card/goals-conceded penalties outweighing everything
-            # else, or the [0, 18] ceiling) -- keep the component
-            # breakdown but make the leading number match what's actually
-            # shown as final_xp everywhere else in the UI.
+            # Clipping or the injury-doubt scaling changed the total --
+            # keep the component breakdown but make the leading number
+            # match what's actually shown as final_xp everywhere else.
             reasoning_text = f"{final_xp:.1f} = " + reasoning_text.split(' = ', 1)[1]
+        if avail['has_partial_injury']:
+            reasoning_text += f" x {avail['injury_factor']:.2f} ({int(avail['chance'])}% injury doubt)"
         reasoning = f"{prefix}{reasoning_text}"
         return pd.Series([final_xp, reasoning], index=['final_xp', 'reasoning'])
 
@@ -233,25 +272,15 @@ def _make_predictions_position_ensemble(df, model, is_preseason=False):
     
     def apply_expert_logic(row):
         prefix = "(Prior season baseline) " if is_preseason else ""
-        
-        # Check availability & API status flags
-        status = str(row.get('status', 'a')).lower() if pd.notna(row.get('status')) else 'a'
-        chance_val = row.get('chance_of_playing_next_round', row.get('chance_of_playing', 100))
-        try:
-            chance = float(chance_val) if pd.notna(chance_val) else 100.0
-        except (ValueError, TypeError):
-            chance = 100.0
-            
-        # Hard Unavailable Guard: 0% chance, or status flags injury/suspension
-        # ('u' -- left the league/on loan elsewhere -- is also a hard wipe;
-        # it just doesn't get its own label since "Injured/Suspended" would
-        # be inaccurate for it).
-        if chance == 0 or status in ['i', 's']:
-            reasoning = f"{prefix}0.0 pts (Injured/Suspended)"
-            return pd.Series([0.0, reasoning], index=['final_xp', 'reasoning'])
-        if status == 'u':
-            reasoning = f"{prefix}0.0 pts (Unavailable)"
-            return pd.Series([0.0, reasoning], index=['final_xp', 'reasoning'])
+
+        # Hard availability wipe (0% chance, injured/suspended/unavailable
+        # status, or a manual override) -- shared with the component
+        # pipeline's own news-override step; see _resolve_availability's
+        # docstring for why this used to be two independently-drifted copies.
+        avail = _resolve_availability(row)
+        if avail['hard_wipe']:
+            return pd.Series([0.0, f"{prefix}{avail['reasoning_suffix']}"], index=['final_xp', 'reasoning'])
+        chance = avail['chance']
 
         # A. AI Performance Points (Raw prediction directly from LR without appearance double-counting)
         raw_val = float(row.get('raw_xp', 0)) if pd.notna(row.get('raw_xp')) else 0.0
@@ -333,9 +362,9 @@ def _make_predictions_position_ensemble(df, model, is_preseason=False):
             
         # F. Selection & Partial Injury Doubt Multipliers
         rotation_factor = starter_prob / 100.0
-        has_partial_injury = (0 < chance < 100)
-        injury_factor = (chance / 100.0) if has_partial_injury else 1.0
-        
+        has_partial_injury = avail['has_partial_injury']
+        injury_factor = avail['injury_factor']
+
         final_xp = subtotal * rotation_factor * injury_factor
         final_xp = float(np.clip(final_xp, 0.0, 18.0))
         

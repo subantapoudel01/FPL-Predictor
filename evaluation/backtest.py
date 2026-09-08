@@ -282,7 +282,11 @@ def run_component_backtest(season, model_name="component_models_v1", fetch_fn=fe
         "sheet, goals conceded, saves, DEFCON, bonus, cards) against raw "
         "total_points, same scope as run_position_ensemble_backtest() -- "
         "not final_xp (which additionally applies the injured/suspended/"
-        "manual-override wipe; see src/predictor.py's docstring)."
+        "manual-override wipe; see src/predictor.py's docstring). CAVEAT: "
+        "the bonus component (training/train_component_models.py::"
+        "fit_bonus_model) is trained on this exact season, not held out --"
+        " its contribution to the numbers below is in-sample, unlike every "
+        "other component's. See that function's docstring for why."
     )
     return _evaluate_predictions(season_df, season, model_name, len(components.columns), scope_note)
 
