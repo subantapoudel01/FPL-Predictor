@@ -138,15 +138,46 @@ def load_app_data():
 
 @st.cache_data(ttl=604800)
 def load_historical_data(_model):
+    """
+    'Raw xP' only (no rule layer, no captaincy scoring) across the full
+    multi-season historical pipeline for the Player History tab.
+    Deliberately not make_predictions(): its rule layer needs live-only
+    columns (chance_of_playing_next_round, etc.) this historical data
+    doesn't carry, and computing final_xp/reasoning/ceiling_score for
+    100k+ historical rows this tab never displays would be wasted work.
+
+    `_model` is whichever bundle src/config.py::USE_COMPONENT_MODEL
+    currently selects (see src/predictor.py::load_active_model) -- this
+    used to assume a bare sklearn model with .predict(), a leftover from
+    before the per-position-ensemble migration that broke silently the
+    first time this tab was actually opened after that migration shipped.
+    Routes by model shape the same way evaluation/backtest.py's own two
+    backtest functions do, so this can't drift from what predictor.py
+    actually serves.
+    """
     df_hist = fetch_full_history()
     if df_hist.empty:
         return pd.DataFrame()
-    features = [
-        'rolling_3_minutes', 'rolling_3_ict_index', 'rolling_3_creativity',
-        'rolling_3_influence', 'rolling_3_threat', 'rolling_3_total_points', 'value'
-    ]
-    X = df_hist[features].fillna(0)
-    df_hist['raw_xp'] = _model.predict(X)
+    df_hist['position'] = df_hist['position'].replace({'GK': 'GKP'})
+
+    if 'positions' in _model:
+        features = _model.get('features', [
+            'rolling_3_minutes', 'rolling_3_ict_index', 'rolling_3_creativity',
+            'rolling_3_influence', 'rolling_3_threat', 'rolling_3_total_points', 'value'
+        ])
+        df_hist = df_hist.dropna(subset=features).reset_index(drop=True)
+        df_hist['raw_xp'] = 0.0
+        for position, ensemble in _model['positions'].items():
+            mask = df_hist['position'] == position
+            if not mask.any():
+                continue
+            X = df_hist.loc[mask, features].fillna(0)
+            df_hist.loc[mask, 'raw_xp'] = ensemble.predict(X)
+    else:
+        from src.components import predict_all_components
+        df_hist = df_hist.reset_index(drop=True)
+        df_hist['raw_xp'] = predict_all_components(df_hist, _model)['raw_xp'].values
+
     return df_hist
 
 raw_json, model = load_app_data()
@@ -955,6 +986,125 @@ def render_rate_my_team_section(df_live, raw_json, current_gw):
             hide_index=True
         )
 
+# --- HELPER: ACCURACY (PUBLIC PREDICTED-VS-ACTUAL RECORD) ---
+# Reuses evaluation/backtest.py's own scoring function directly rather than
+# re-implementing RMSE/bucket logic here -- this page can never silently
+# report a flattered number the CLI backtest wouldn't also produce, because
+# it's the exact same function. Recomputed fresh from the historical CSV
+# pipeline (source B in CLAUDE.md) on every cache refresh -- no local
+# persistence, per the project's deployment constraint (Streamlit Community
+# Cloud's free tier wipes the filesystem on every redeploy).
+ACCURACY_SEASONS = ["2025-26", "2024-25", "2023-24", "2022-23", "2021-22"]
+
+
+@st.cache_data(ttl=3600)
+def _compute_accuracy_backtest(season):
+    from evaluation.backtest import run_position_ensemble_backtest
+    return run_position_ensemble_backtest(season)
+
+
+def render_accuracy_page():
+    """
+    The public accuracy record: predicted vs. actual points, tracked across
+    every gameweek of a completed season, shown openly -- including the
+    weeks the model got it wrong. Deliberately evaluates raw_xp (the
+    model's own prediction), not final_xp (the rule-adjusted number shown
+    elsewhere in the app) -- the same scoping evaluation/backtest.py's
+    module docstring documents: final_xp's historical rule-layer context
+    (what fixture difficulty/rotation risk/DEFCON rate genuinely were for
+    a specific past gameweek) isn't reconstructable, so this reports the
+    number that actually can be honestly measured, labeled as exactly
+    that, rather than a flattering number this project can't verify.
+    """
+    st.markdown("### 📈 Accuracy")
+    st.caption(
+        "Predicted vs. actual points, tracked across every gameweek of a "
+        "completed season — shown openly, including the weeks the model "
+        "got it wrong. This evaluates **raw_xp**, the model's own raw "
+        "prediction before the rule layer adjusts it to the `final_xp` "
+        "shown elsewhere in the app — the same honest scope "
+        "`evaluation/backtest.py` uses, so this page can never show a "
+        "number the project's own CLI backtest wouldn't also report."
+    )
+
+    season = st.selectbox("Season", ACCURACY_SEASONS, index=0, key="accuracy_season")
+
+    try:
+        with st.spinner(f"Backtesting the production model against every gameweek of {season}..."):
+            results, season_df = _compute_accuracy_backtest(season)
+    except Exception as e:
+        st.warning(f"⚠️ Could not run the accuracy backtest for {season} right now: {e}")
+        return
+
+    overall = results["overall"]
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("Gameweeks", results["n_gameweeks"])
+    with m2:
+        st.metric("RMSE", f"{overall['rmse']:.2f}")
+    with m3:
+        st.metric("MAE", f"{overall['mae']:.2f}")
+    with m4:
+        sp = results.get("spearman_rank_correlation_mean_per_gw")
+        st.metric("Rank Correlation", f"{sp:.2f}" if sp is not None else "n/a")
+
+    # --- Per-gameweek RMSE/MAE trend -- the actual "tracked across
+    # gameweeks" record, not just one season-wide number. ---
+    gw_stats = (
+        season_df.groupby("GW")
+        .apply(lambda g: pd.Series({
+            "RMSE": float(np.sqrt(((g["predicted"] - g["actual"]) ** 2).mean())),
+            "MAE": float((g["predicted"] - g["actual"]).abs().mean()),
+        }))
+        .reset_index()
+        .sort_values("GW")
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=gw_stats["GW"], y=gw_stats["RMSE"], mode="lines+markers", name="RMSE", line=dict(color="#D64B5E")))
+    fig.add_trace(go.Scatter(x=gw_stats["GW"], y=gw_stats["MAE"], mode="lines+markers", name="MAE", line=dict(color="#FFC72C")))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#F2F4F8",
+        xaxis_title="Gameweek",
+        yaxis_title="Error (points)",
+        margin=dict(l=10, r=10, t=30, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # --- By outcome bucket -- the same Zeros/Blanks/Tickers/Haulers split
+    # evaluation/backtest.py reports, so a visitor sees the model is judged
+    # on more than one flattering global number. ---
+    st.markdown("#### By outcome bucket")
+    st.caption("Zeros: didn't play. Blanks: played, ≤2 pts. Tickers: 3–4 pts. Haulers: 5+ pts.")
+    bucket_df = pd.DataFrame(results["by_bucket"]).rename(
+        columns={"bucket": "Bucket", "n": "N", "rmse": "RMSE", "mae": "MAE"}
+    )
+    st.dataframe(
+        bucket_df.style.format({"RMSE": "{:.2f}", "MAE": "{:.2f}"}),
+        use_container_width=True, hide_index=True,
+    )
+
+    # --- Biggest misses, most recent gameweek in this season -- the
+    # "including the weeks it got things wrong" part, named explicitly
+    # rather than left implicit in an aggregate error number. ---
+    st.markdown("#### Biggest misses — most recent gameweek in this season")
+    latest_gw = int(season_df["GW"].max())
+    latest = season_df[season_df["GW"] == latest_gw].copy()
+    latest["miss"] = latest["predicted"] - latest["actual"]
+    top_misses = latest.reindex(latest["miss"].abs().sort_values(ascending=False).index).head(10)
+    disp = top_misses[["name", "position", "predicted", "actual", "miss"]].rename(
+        columns={"name": "Player", "position": "Pos", "predicted": "Predicted", "actual": "Actual", "miss": "Predicted − Actual"}
+    )
+    st.caption(f"Gameweek {latest_gw}")
+    st.dataframe(
+        disp.style.format({"Predicted": "{:.1f}", "Actual": "{:.0f}", "Predicted − Actual": "{:+.1f}"}),
+        use_container_width=True, hide_index=True,
+    )
+
+
 # --- HELPER: MINI-LEAGUE (GROUP VIEW) ---
 # Squad-level detail (projected points, captains, ownership) is capped to
 # this many entries by rank -- fetch_league_standings can return up to 500
@@ -1274,7 +1424,7 @@ if raw_json and 'static' in raw_json and 'events' in raw_json['static']:
 st.markdown("---")
 
 # --- TABS ---
-tab_pred, tab_league, tab_hist, tab_hauls, tab_info = st.tabs(["🔮 Predictions", "🏟️ Mini-League", "📊 Player History", "🏆 Hall of Fame", "ℹ️ Documentation"])
+tab_pred, tab_accuracy, tab_league, tab_hist, tab_hauls, tab_info = st.tabs(["🔮 Predictions", "📈 Accuracy", "🏟️ Mini-League", "📊 Player History", "🏆 Hall of Fame", "ℹ️ Documentation"])
 
 # === TAB 1: LIVE PREDICTIONS ===
 with tab_pred:
@@ -1381,6 +1531,10 @@ with tab_pred:
     st.markdown("---")
     # Render Rate My Team Evaluator
     render_rate_my_team_section(df_live, raw_json, CURRENT_GW)
+
+# === TAB: ACCURACY (PUBLIC PREDICTED-VS-ACTUAL RECORD) ===
+with tab_accuracy:
+    render_accuracy_page()
 
 # === TAB: MINI-LEAGUE (GROUP VIEW) ===
 with tab_league:
