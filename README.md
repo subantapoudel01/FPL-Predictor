@@ -7,7 +7,7 @@ CatalanPlays is an open-source Expected Points ($\text{xP}$) forecasting and squ
 
 ---
 
-## ❓ What is CatalanPlays?
+## ❓ What is ?
 
 CatalanPlays is an intelligent decision-support application built for Fantasy Premier League (FPL) managers. Instead of relying on gut feeling, the platform analyzes over 110,000 historical match records to forecast upcoming player performance in real time.
 
