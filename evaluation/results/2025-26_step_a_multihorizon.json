@@ -1,0 +1,91 @@
+{
+  "season": "2025-26",
+  "model_name": "step_a_multihorizon",
+  "generated_at_utc": "2026-09-06T18:10:21.330100+00:00",
+  "n_gameweeks": 38,
+  "n_player_gameweeks": 29338,
+  "n_features": 31,
+  "overall": {
+    "n": 29338,
+    "rmse": 1.986764290961701,
+    "mae": 1.0527347250092567
+  },
+  "by_bucket": [
+    {
+      "bucket": "Zeros",
+      "n": 17977,
+      "rmse": 0.7548880155101968,
+      "mae": 0.4281514598142308
+    },
+    {
+      "bucket": "Blanks",
+      "n": 7132,
+      "rmse": 1.524042731720068,
+      "mae": 1.1906010212294154
+    },
+    {
+      "bucket": "Tickers",
+      "n": 1697,
+      "rmse": 1.5090666651924085,
+      "mae": 1.1781989411130298
+    },
+    {
+      "bucket": "Haulers",
+      "n": 2532,
+      "rmse": 5.7984007289044355,
+      "mae": 5.014803508200688
+    }
+  ],
+  "by_position": [
+    {
+      "position": "GKP",
+      "n": 3383,
+      "rmse": 1.465468889376318,
+      "mae": 0.6316411378181204
+    },
+    {
+      "position": "DEF",
+      "n": 9601,
+      "rmse": 2.1806156627723223,
+      "mae": 1.1757674628890815
+    },
+    {
+      "position": "MID",
+      "n": 13119,
+      "rmse": 1.9154105993852804,
+      "mae": 1.0458501074799635
+    },
+    {
+      "position": "FWD",
+      "n": 3235,
+      "rmse": 2.1355929145750263,
+      "mae": 1.1558696821808834
+    }
+  ],
+  "spearman_rank_correlation_mean_per_gw": 0.7054851901602783,
+  "spearman_n_gameweeks": 38,
+  "top10_overlap_mean_per_gw": 1.131578947368421,
+  "top10_overlap_n_gameweeks": 38,
+  "bucket_definitions": {
+    "Zeros": "minutes == 0 (did not play)",
+    "Blanks": "played, actual points <= 2",
+    "Tickers": "played, actual points 3-4",
+    "Haulers": "actual points >= 5"
+  },
+  "scope_note": "Retrained LinearRegression on feature set 'step_a_multihorizon' (31 features), train seasons ['2022-23', '2023-24', '2024-25'], NOT the shipped Models/linear_reg_v1.pkl. Evaluates the model's own raw prediction, not a rule-adjusted final_xp -- see train_and_backtest() docstring in evaluation/backtest.py.",
+  "reference_published_one_gw_ahead_rmse": {
+    "note": "For context only -- NOT a direct comparison until this harness itself is verified against these. Different leagues/seasons/eligible-player pools are not guaranteed to line up with the buckets here.",
+    "openfpl_arxiv_2508.09992": {
+      "Zeros": 0.818,
+      "Blanks": 1.291,
+      "Tickers": 1.517,
+      "Haulers": 5.142
+    },
+    "fpl_review_paid_model": {
+      "Zeros": 0.689,
+      "Blanks": 1.189,
+      "Tickers": 1.594,
+      "Haulers": 5.172
+    }
+  }
+}

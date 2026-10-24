@@ -3,15 +3,17 @@ import pandas as pd
 import json
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
 import re
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # Internal Modules
-from src.data_loader import fetch_api_data, fetch_player_live_summary, fetch_user_team, TZ_MAP, format_timestamp_tz
+from src.data_loader import fetch_api_data, fetch_player_live_summary, fetch_user_team, fetch_league_standings, fetch_league_squads, TZ_MAP, fixture_status
 from src.features import process_data, fetch_full_history
-from src.predictor import load_model, make_predictions
+from src.predictor import load_active_model, make_predictions, ceiling_stars
+from src.projections import build_projection_csv
 
 def render_html(html):
     """
@@ -98,6 +100,12 @@ h3, h4 {
 code, pre, .stCodeBlock {
     font-family: var(--font-mono) !important;
 }
+.status-live {
+    color: #D64B5E !important;
+}
+.status-ft, .status-upcoming {
+    color: #8A93A6 !important;
+}
 </style>
 """)
 
@@ -108,24 +116,68 @@ st.caption("Project Established: August 2026 | Current Engine: CatalanPlays Engi
 st.markdown("---")
 
 # --- DATA INGESTION LAYER ---
-@st.cache_data(ttl=3600)
+# Not itself cached: fetch_api_data() combines fetch_static_data() (ttl=3600)
+# and fetch_fixtures_data() (ttl=60) from src/data_loader.py, each cached
+# independently. Wrapping this call in another st.cache_data would gate
+# both behind whichever TTL was picked here, defeating the fixtures' 60s
+# freshness -- see src/data_loader.py::fetch_api_data for the same note.
+@st.cache_resource
+def load_ml_model():
+    # Whichever model src/config.py::USE_COMPONENT_MODEL selects -- the
+    # component pipeline (Models/component_models_v1.pkl) by default, or
+    # the previous per-position ensemble (Models/position_models_v1.pkl)
+    # if that flag is rolled back. See src/predictor.py::load_active_model.
+    return load_active_model()
+
 def load_app_data():
     raw_json = fetch_api_data()
-    if not raw_json: return None, None, None
-    model = load_model()
+    if not raw_json:
+        return None, None
+    model = load_ml_model()
     return raw_json, model
 
 @st.cache_data(ttl=604800)
 def load_historical_data(_model):
+    """
+    'Raw xP' only (no rule layer, no captaincy scoring) across the full
+    multi-season historical pipeline for the Player History tab.
+    Deliberately not make_predictions(): its rule layer needs live-only
+    columns (chance_of_playing_next_round, etc.) this historical data
+    doesn't carry, and computing final_xp/reasoning/ceiling_score for
+    100k+ historical rows this tab never displays would be wasted work.
+
+    `_model` is whichever bundle src/config.py::USE_COMPONENT_MODEL
+    currently selects (see src/predictor.py::load_active_model) -- this
+    used to assume a bare sklearn model with .predict(), a leftover from
+    before the per-position-ensemble migration that broke silently the
+    first time this tab was actually opened after that migration shipped.
+    Routes by model shape the same way evaluation/backtest.py's own two
+    backtest functions do, so this can't drift from what predictor.py
+    actually serves.
+    """
     df_hist = fetch_full_history()
     if df_hist.empty:
         return pd.DataFrame()
-    features = [
-        'rolling_3_minutes', 'rolling_3_ict_index', 'rolling_3_creativity',
-        'rolling_3_influence', 'rolling_3_threat', 'rolling_3_total_points', 'value'
-    ]
-    X = df_hist[features].fillna(0)
-    df_hist['raw_xp'] = _model.predict(X)
+    df_hist['position'] = df_hist['position'].replace({'GK': 'GKP'})
+
+    if 'positions' in _model:
+        features = _model.get('features', [
+            'rolling_3_minutes', 'rolling_3_ict_index', 'rolling_3_creativity',
+            'rolling_3_influence', 'rolling_3_threat', 'rolling_3_total_points', 'value'
+        ])
+        df_hist = df_hist.dropna(subset=features).reset_index(drop=True)
+        df_hist['raw_xp'] = 0.0
+        for position, ensemble in _model['positions'].items():
+            mask = df_hist['position'] == position
+            if not mask.any():
+                continue
+            X = df_hist.loc[mask, features].fillna(0)
+            df_hist.loc[mask, 'raw_xp'] = ensemble.predict(X)
+    else:
+        from src.components import predict_all_components
+        df_hist = df_hist.reset_index(drop=True)
+        df_hist['raw_xp'] = predict_all_components(df_hist, _model)['raw_xp'].values
+
     return df_hist
 
 raw_json, model = load_app_data()
@@ -138,75 +190,131 @@ if not raw_json or not model:
 df_live, CURRENT_GW, IS_PRESEASON = process_data(raw_json, target_gw=None)
 df_live = make_predictions(df_live, model, is_preseason=IS_PRESEASON)
 
-# --- LAST-GAMEWEEK RECAP TARGET ---
+# --- CURRENT GAMEWEEK EVENT LOOKUP ---
+# Used by the deadline/fixtures banner further down so it can never disagree
+# with CURRENT_GW about which gameweek "now" is.
 _events_list = raw_json.get('static', {}).get('events', []) if raw_json else []
 _current_gw_event = next((e for e in _events_list if e.get('id') == CURRENT_GW), None)
 
-_finished_gw_ids = [e['id'] for e in _events_list if e.get('finished')]
-RECAP_GW = max(_finished_gw_ids) if _finished_gw_ids else None
-
-CURRENT_SEASON_LABEL = "2025-26"
-
-# --- HELPER: LAST GAMEWEEK RECAP (PREDICTED VS. ACTUAL, NO LEAKAGE, NO STORAGE) ---
-def render_last_gameweek_recap(gw_id):
+# --- HELPER: SEASON POINTS EXPLORER (LIVE API ONLY, NO LOCAL STORAGE) ---
+def render_season_points_explorer(df_live, raw_json):
     """
-    Shows predicted-vs-actual for the most recently finished gameweek.
-
-    Reconstructed entirely from fetch_full_history() -- the same historical
-    per-gameweek pipeline the Player History tab already uses. Each row
-    there is a true point-in-time record: rolling features are computed
-    with .shift(1).rolling(3), grouped by player and season, so a
-    gameweek's `raw_xp` only ever depends on gameweeks *before* it. That
-    means this is safe to recompute fresh on every page load -- no local
-    snapshot file, nothing to lose on a Streamlit Cloud redeploy.
-
-    Trade-off, stated plainly: this compares the base statistical model's
-    raw_xp, not the full rule-adjusted final_xp shown in the live
-    Predictions table. Reconstructing the expert-rule layer (fixture
-    difficulty, rotation risk, DEFCON, etc. as they stood *for that
-    gameweek specifically*) historically is a larger undertaking than
-    reusing data this app already fetches for another tab.
+    Browse this season's top scorers and drill into any one player's
+    gameweek-by-gameweek breakdown. Runs entirely on the live API --
+    bootstrap-static/ for the leaderboard (already loaded into df_live),
+    element-summary/{id}/ for the per-player history -- so unlike the local-
+    snapshot recap this replaced, there is nothing cached to local disk and
+    nothing lost on a Streamlit Cloud redeploy.
     """
-    if gw_id is None:
+    st.markdown("### 🔍 Season Points Explorer")
+    st.caption("Top 50 players by total points this season. Search or filter, then pick one below for their full gameweek-by-gameweek breakdown.")
+
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        search_query = st.text_input("Search Player", key="spe_search")
+    with c2:
+        filter_pos = st.selectbox("Filter Position", ["All", "GKP", "DEF", "MID", "FWD"], key="spe_pos")
+
+    top50 = df_live.sort_values(by='total_points', ascending=False).head(50).copy()
+
+    if filter_pos != "All":
+        top50 = top50[top50['position'] == filter_pos]
+
+    clean_search = sanitize_search_input(search_query)
+    if clean_search:
+        top50 = top50[top50['web_name'].str.contains(re.escape(clean_search), case=False, na=False)]
+
+    if top50.empty:
+        st.info("No players in the top 50 match that search/filter.")
         return
 
-    df_hist_all = load_historical_data(model)
-    if df_hist_all.empty:
-        return
-
-    gw_rows = df_hist_all[
-        (df_hist_all['season'] == CURRENT_SEASON_LABEL) & (df_hist_all['GW'] == gw_id)
-    ].copy()
-    if gw_rows.empty:
-        st.info(f"ℹ️ **GW {gw_id} Recap unavailable:** the historical data source hasn't published this gameweek yet. Check back shortly.")
-        return
-
-    gw_rows['Diff'] = gw_rows['raw_xp'] - gw_rows['total_points']
-    rmse = float(np.sqrt((gw_rows['Diff'] ** 2).mean()))
-    top_performer = gw_rows.sort_values('total_points', ascending=False).iloc[0]
-
-    st.markdown(f"### 📋 Last Gameweek Recap — GW {gw_id}")
-    st.caption("Reconstructed from historical per-gameweek data using only stats available before that gameweek -- no snapshot storage, no hindsight.")
-
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        st.metric("RMSE (This Gameweek)", f"{rmse:.2f}")
-    with m2:
-        st.metric("Players Tracked", f"{len(gw_rows)}")
-    with m3:
-        st.metric("Top Performer", f"{top_performer['name']} ({int(top_performer['total_points'])} pts)")
-
-    display_recap = gw_rows.rename(columns={
-        'name': 'Player', 'team': 'Team', 'position': 'Pos',
-        'raw_xp': 'Predicted', 'total_points': 'Actual'
-    })[['Player', 'Team', 'Pos', 'Predicted', 'Actual', 'Diff']].sort_values(by='Actual', ascending=False).head(20).reset_index(drop=True)
+    leaderboard_cols = {
+        'web_name': 'Player', 'team_name': 'Team', 'position': 'Pos',
+        'total_points': 'Pts', 'minutes': 'Mins', 'goals_scored': 'G',
+        'assists': 'A', 'bonus': 'Bonus', 'value': 'Price'
+    }
+    leaderboard = (
+        top50[leaderboard_cols.keys()].rename(columns=leaderboard_cols)
+        .sort_values(by='Pts', ascending=False).reset_index(drop=True)
+    )
 
     st.dataframe(
-        display_recap.style
-            .set_properties(**{'color': '#F2F4F8'})
-            .format({"Predicted": "{:.1f}", "Diff": "{:+.1f}"}),
+        leaderboard.style.set_properties(**{'color': '#F2F4F8'}).format({"Price": "£{:.1f}"}),
         use_container_width=True,
-        height=420,
+        height=400,
+        hide_index=True
+    )
+
+    st.markdown("#### 📈 Player Gameweek Breakdown")
+    ranked_top50 = top50.sort_values(by='total_points', ascending=False)
+    player_options = ranked_top50['web_name'].tolist()
+    selected_player_name = st.selectbox(
+        "Select a player from the table above", options=player_options, key="spe_player_select"
+    )
+
+    selected_row = ranked_top50[ranked_top50['web_name'] == selected_player_name].iloc[0]
+    player_id = int(selected_row['id'])
+
+    summary = fetch_player_live_summary(player_id)
+    history = summary.get('history', []) if summary else []
+
+    if not history:
+        st.info(f"ℹ️ **No gameweek data yet for {selected_player_name}** — they haven't featured in a live gameweek this season.")
+        return
+
+    hist_df = pd.DataFrame(history).sort_values(by='round').reset_index(drop=True)
+    total_minutes = int(pd.to_numeric(hist_df['minutes'], errors='coerce').fillna(0).sum())
+
+    if total_minutes == 0:
+        st.info(f"ℹ️ **{selected_player_name} hasn't played any minutes yet this season** — nothing to chart.")
+        return
+
+    season_points = int(selected_row['total_points'])
+    pp90 = season_points / (total_minutes / 90.0)
+    best_row = hist_df.sort_values(by='total_points', ascending=False).iloc[0]
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("Season Points", f"{season_points}")
+    with m2:
+        st.metric("Total Minutes", f"{total_minutes}")
+    with m3:
+        st.metric("Points / 90", f"{pp90:.2f}")
+    with m4:
+        st.metric("Best Gameweek", f"GW {int(best_row['round'])} ({int(best_row['total_points'])} pts)")
+
+    hist_df['GW'] = hist_df['round'].astype(str)
+    fig = go.Figure(go.Bar(x=hist_df['GW'], y=hist_df['total_points'], marker_color='#D64B5E'))
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font_color='#F2F4F8',
+        xaxis_title='Gameweek',
+        yaxis_title='Points',
+        margin=dict(l=10, r=10, t=10, b=10)
+    )
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+
+    teams_map = {t['id']: t['short_name'] for t in raw_json['static'].get('teams', [])} if raw_json and 'static' in raw_json else {}
+
+    def format_opp(row):
+        t_name = teams_map.get(row.get('opponent_team'), str(row.get('opponent_team')))
+        home_away = "H" if row.get('was_home') else "A"
+        return f"{t_name} ({home_away})"
+
+    breakdown = hist_df.copy()
+    breakdown['Opponent'] = breakdown.apply(format_opp, axis=1)
+    breakdown_cols = {
+        'round': 'GW', 'Opponent': 'Opponent', 'minutes': 'Mins',
+        'goals_scored': 'G', 'assists': 'A', 'clean_sheets': 'CS',
+        'bonus': 'Bonus', 'total_points': 'Pts'
+    }
+    breakdown_table = breakdown[breakdown_cols.keys()].rename(columns=breakdown_cols)
+
+    st.dataframe(
+        breakdown_table.style.set_properties(**{'color': '#F2F4F8'}),
+        use_container_width=True,
+        height=400,
         hide_index=True
     )
     st.markdown("---")
@@ -391,25 +499,25 @@ def render_captaincy_card(df_candidates):
 
     st.markdown("### 👑 Top Captain Picks")
 
+    # Scaled against this gameweek's own top Ceiling Score, not an absolute
+    # cutoff -- everything that survives the eligibility filter above is
+    # already a strong candidate, so an absolute threshold gave every row
+    # the same rating. Filled + empty stars both render so 4/5 and 5/5 are
+    # visually distinguishable.
+    star_counts = ceiling_stars(caps['ceiling_score'])
+
     cap_rows = []
     for idx, r in caps.iterrows():
         xp = float(r.get('final_xp', 0.0))
+        ceiling = float(r.get('ceiling_score', 0.0))
         name = r.get('web_name', '')
         team = r.get('team_name', '')
         opp = r.get('next_opponent', '-')
         diff = float(r.get('next_match_difficulty', 3))
         starter_prob = float(r.get('starter_prob', 100))
 
-        if xp >= 6.0:
-            stars = "⭐⭐⭐⭐⭐"
-        elif xp >= 4.5:
-            stars = "⭐⭐⭐⭐"
-        elif xp >= 3.5:
-            stars = "⭐⭐⭐"
-        elif xp >= 2.5:
-            stars = "⭐⭐"
-        else:
-            stars = "⭐"
+        n_stars = int(star_counts.iloc[idx])
+        stars = "★" * n_stars + "☆" * (5 - n_stars)
 
         rationale_parts = []
         if "(H)" in opp:
@@ -438,8 +546,9 @@ def render_captaincy_card(df_candidates):
             "Rank": idx + 1,
             "Player": f"{name} ({team})",
             "Opponent": opp,
-            "Predicted Points": f"{xp:.1f} pts",
-            "Star Rating": stars,
+            "xP": f"{xp:.1f} pts",
+            "Ceiling": f"{ceiling:.1f}",
+            "Rating": stars,
             "Key Rationale": rationale_str
         })
 
@@ -698,12 +807,28 @@ def render_rate_my_team_section(df_live, raw_json, current_gw):
     weakest starter link, bench optimization alert, recommended transfer plan card, and displays a full squad table.
     """
     st.markdown("### 📊 Rate My Team (Live Squad Evaluator)")
-    st.caption("Enter your official FPL Team ID (from your FPL web URL: `entry/{team_id}/event/...`) to evaluate your starting XI projected points and bench optimization.")
+    st.caption("Enter your official FPL Team ID (from your FPL web URL: `entry/{team_id}/event/...`) to evaluate your starting XI projected points and bench optimization. Your ID is saved to the page URL so you can bookmark your own dashboard.")
+
+    # Pre-fill from ?team_id=... in the URL so a bookmarked/shared link
+    # reopens on the same squad without retyping the ID.
+    default_team_id = 3753
+    qp_team_id = st.query_params.get("team_id")
+    if qp_team_id:
+        try:
+            default_team_id = int(qp_team_id)
+        except (TypeError, ValueError):
+            pass
 
     c1, c2 = st.columns([1, 2])
     with c1:
-        team_id = st.number_input("Enter FPL Team ID", min_value=1, value=3753, step=1, key="rmt_team_id_input")
+        team_id = st.number_input("Enter FPL Team ID", min_value=1, value=default_team_id, step=1, key="rmt_team_id_input")
         fetch_btn = st.button("Evaluate Squad 🚀", key="rmt_fetch_btn")
+
+    # Keep the URL in sync with whatever ID is actually showing -- covers
+    # both the button click and directly editing the number field, so the
+    # bookmarked link always matches what's on screen.
+    if team_id and str(int(team_id)) != qp_team_id:
+        st.query_params["team_id"] = str(int(team_id))
 
     if team_id:
         team_data = fetch_user_team(int(team_id), current_gw)
@@ -861,6 +986,297 @@ def render_rate_my_team_section(df_live, raw_json, current_gw):
             hide_index=True
         )
 
+# --- HELPER: ACCURACY (PUBLIC PREDICTED-VS-ACTUAL RECORD) ---
+# Reuses evaluation/backtest.py's own scoring function directly rather than
+# re-implementing RMSE/bucket logic here -- this page can never silently
+# report a flattered number the CLI backtest wouldn't also produce, because
+# it's the exact same function. Recomputed fresh from the historical CSV
+# pipeline (source B in CLAUDE.md) on every cache refresh -- no local
+# persistence, per the project's deployment constraint (Streamlit Community
+# Cloud's free tier wipes the filesystem on every redeploy).
+ACCURACY_SEASONS = ["2025-26", "2024-25", "2023-24", "2022-23", "2021-22"]
+
+
+@st.cache_data(ttl=3600)
+def _compute_accuracy_backtest(season):
+    from evaluation.backtest import run_position_ensemble_backtest
+    return run_position_ensemble_backtest(season)
+
+
+def render_accuracy_page():
+    """
+    The public accuracy record: predicted vs. actual points, tracked across
+    every gameweek of a completed season, shown openly -- including the
+    weeks the model got it wrong. Deliberately evaluates raw_xp (the
+    model's own prediction), not final_xp (the rule-adjusted number shown
+    elsewhere in the app) -- the same scoping evaluation/backtest.py's
+    module docstring documents: final_xp's historical rule-layer context
+    (what fixture difficulty/rotation risk/DEFCON rate genuinely were for
+    a specific past gameweek) isn't reconstructable, so this reports the
+    number that actually can be honestly measured, labeled as exactly
+    that, rather than a flattering number this project can't verify.
+    """
+    st.markdown("### 📈 Accuracy")
+    st.caption(
+        "Predicted vs. actual points, tracked across every gameweek of a "
+        "completed season — shown openly, including the weeks the model "
+        "got it wrong. This evaluates **raw_xp**, the model's own raw "
+        "prediction before the rule layer adjusts it to the `final_xp` "
+        "shown elsewhere in the app — the same honest scope "
+        "`evaluation/backtest.py` uses, so this page can never show a "
+        "number the project's own CLI backtest wouldn't also report."
+    )
+
+    season = st.selectbox("Season", ACCURACY_SEASONS, index=0, key="accuracy_season")
+
+    try:
+        with st.spinner(f"Backtesting the production model against every gameweek of {season}..."):
+            results, season_df = _compute_accuracy_backtest(season)
+    except Exception as e:
+        st.warning(f"⚠️ Could not run the accuracy backtest for {season} right now: {e}")
+        return
+
+    overall = results["overall"]
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric("Gameweeks", results["n_gameweeks"])
+    with m2:
+        st.metric("RMSE", f"{overall['rmse']:.2f}")
+    with m3:
+        st.metric("MAE", f"{overall['mae']:.2f}")
+    with m4:
+        sp = results.get("spearman_rank_correlation_mean_per_gw")
+        st.metric("Rank Correlation", f"{sp:.2f}" if sp is not None else "n/a")
+
+    # --- Per-gameweek RMSE/MAE trend -- the actual "tracked across
+    # gameweeks" record, not just one season-wide number. ---
+    gw_stats = (
+        season_df.groupby("GW")
+        .apply(lambda g: pd.Series({
+            "RMSE": float(np.sqrt(((g["predicted"] - g["actual"]) ** 2).mean())),
+            "MAE": float((g["predicted"] - g["actual"]).abs().mean()),
+        }))
+        .reset_index()
+        .sort_values("GW")
+    )
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=gw_stats["GW"], y=gw_stats["RMSE"], mode="lines+markers", name="RMSE", line=dict(color="#D64B5E")))
+    fig.add_trace(go.Scatter(x=gw_stats["GW"], y=gw_stats["MAE"], mode="lines+markers", name="MAE", line=dict(color="#FFC72C")))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color="#F2F4F8",
+        xaxis_title="Gameweek",
+        yaxis_title="Error (points)",
+        margin=dict(l=10, r=10, t=30, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # --- By outcome bucket -- the same Zeros/Blanks/Tickers/Haulers split
+    # evaluation/backtest.py reports, so a visitor sees the model is judged
+    # on more than one flattering global number. ---
+    st.markdown("#### By outcome bucket")
+    st.caption("Zeros: didn't play. Blanks: played, ≤2 pts. Tickers: 3–4 pts. Haulers: 5+ pts.")
+    bucket_df = pd.DataFrame(results["by_bucket"]).rename(
+        columns={"bucket": "Bucket", "n": "N", "rmse": "RMSE", "mae": "MAE"}
+    )
+    st.dataframe(
+        bucket_df.style.format({"RMSE": "{:.2f}", "MAE": "{:.2f}"}),
+        use_container_width=True, hide_index=True,
+    )
+
+    # --- Biggest misses, most recent gameweek in this season -- the
+    # "including the weeks it got things wrong" part, named explicitly
+    # rather than left implicit in an aggregate error number. ---
+    st.markdown("#### Biggest misses — most recent gameweek in this season")
+    latest_gw = int(season_df["GW"].max())
+    latest = season_df[season_df["GW"] == latest_gw].copy()
+    latest["miss"] = latest["predicted"] - latest["actual"]
+    top_misses = latest.reindex(latest["miss"].abs().sort_values(ascending=False).index).head(10)
+    disp = top_misses[["name", "position", "predicted", "actual", "miss"]].rename(
+        columns={"name": "Player", "position": "Pos", "predicted": "Predicted", "actual": "Actual", "miss": "Predicted − Actual"}
+    )
+    st.caption(f"Gameweek {latest_gw}")
+    st.dataframe(
+        disp.style.format({"Predicted": "{:.1f}", "Actual": "{:.0f}", "Predicted − Actual": "{:+.1f}"}),
+        use_container_width=True, hide_index=True,
+    )
+
+
+# --- HELPER: MINI-LEAGUE (GROUP VIEW) ---
+# Squad-level detail (projected points, captains, ownership) is capped to
+# this many entries by rank -- fetch_league_standings can return up to 500
+# (10 pages), but fetching every one of those managers' picks one at a
+# time (politely, ~0.15s apart -- see fetch_entry_picks) would take
+# minutes for a league that size. A mini-league among friends is almost
+# always well under this; the standings table itself still shows everyone
+# retrieved.
+MAX_LEAGUE_ENTRIES_FOR_SQUADS = 60
+
+
+def render_mini_league_section(df_live, raw_json, current_gw):
+    """
+    Renders the Mini-League tab: standings, each manager's projected
+    points and captain for the upcoming gameweek, effective ownership
+    within the league (weighted by captaincy, not global "selected by"),
+    and a differentials view.
+    """
+    st.markdown("### 🏟️ Mini-League")
+    st.caption(
+        "Enter your mini-league's ID (from its FPL page URL: "
+        "`fantasy.premierleague.com/leagues/{league_id}/standings/c`) to see the "
+        "league's standings, each manager's projected points for the upcoming "
+        "gameweek, who they've captained, and effective ownership within the "
+        "league -- the number that actually tells you which of your players move "
+        "you up or down *this* league, not the global player pool. Your league ID "
+        "is saved to the page URL so you can bookmark or share this view."
+    )
+
+    default_league_id = None
+    qp_league_id = st.query_params.get("league_id")
+    if qp_league_id:
+        try:
+            default_league_id = int(qp_league_id)
+        except (TypeError, ValueError):
+            pass
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        league_id = st.number_input(
+            "Enter Mini-League ID", min_value=1, value=default_league_id,
+            step=1, key="ml_league_id_input"
+        )
+
+    if league_id and str(int(league_id)) != qp_league_id:
+        st.query_params["league_id"] = str(int(league_id))
+
+    if not league_id:
+        st.info("Enter a mini-league ID above to load it.")
+        return
+
+    with st.spinner(f"Fetching standings for league {int(league_id)}..."):
+        league_data = fetch_league_standings(int(league_id))
+
+    if league_data is None:
+        st.warning(
+            f"⚠️ Could not load league `{int(league_id)}`. It may be **private** "
+            "(FPL's public API can only read leagues that allow it), the ID may be "
+            "wrong, or the FPL API may be temporarily unavailable. Double-check the "
+            "ID from the league's own page URL and try again."
+        )
+        return
+
+    standings = league_data['standings']
+    if not standings:
+        st.info("This league has no entries yet.")
+        return
+
+    league_name = league_data['league'].get('name', 'Mini-League')
+    st.markdown(f"#### {league_name}")
+    if league_data.get('truncated'):
+        st.info(f"League has more than {len(standings)} entries -- showing the first {len(standings)} by rank.")
+
+    entry_ids = [e['entry'] for e in standings]
+    fetch_entries = entry_ids[:MAX_LEAGUE_ENTRIES_FOR_SQUADS]
+    if len(entry_ids) > MAX_LEAGUE_ENTRIES_FOR_SQUADS:
+        st.caption(
+            f"Squad-level detail (projected points, captains, ownership) limited to "
+            f"the top {MAX_LEAGUE_ENTRIES_FOR_SQUADS} entries by rank to keep load "
+            f"times reasonable -- the standings table below still covers everyone "
+            f"retrieved."
+        )
+
+    with st.spinner(f"Fetching {len(fetch_entries)} managers' squads for GW {current_gw} (paced to respect FPL's rate limits, may take a moment)..."):
+        squads = fetch_league_squads(fetch_entries, current_gw)
+
+    id_to_web_name = df_live.set_index('id')['web_name'].to_dict()
+    id_to_xp = df_live.set_index('id')['final_xp'].to_dict()
+
+    manager_rows = []
+    ownership_count = {}
+    ownership_weight = {}
+    n_managers_with_data = 0
+
+    for entry in standings:
+        eid = entry['entry']
+        picks_data = squads.get(eid)
+        row = {
+            'Rank': entry.get('rank'),
+            'Manager': entry.get('player_name'),
+            'Team': entry.get('entry_name'),
+            'Total Pts': entry.get('total'),
+        }
+        if picks_data is None:
+            row['Projected GW Pts'] = None
+            row['Captain'] = 'Unavailable'
+            manager_rows.append(row)
+            continue
+
+        n_managers_with_data += 1
+        proj = 0.0
+        captain_name = 'N/A'
+        for p in picks_data.get('picks', []):
+            el = p.get('element')
+            mult = p.get('multiplier', 0) or 0
+            proj += id_to_xp.get(el, 0.0) * mult
+            ownership_count[el] = ownership_count.get(el, 0) + 1
+            ownership_weight[el] = ownership_weight.get(el, 0) + mult
+            if p.get('is_captain'):
+                captain_name = id_to_web_name.get(el, f"#{el}")
+
+        row['Projected GW Pts'] = round(proj, 1)
+        row['Captain'] = captain_name
+        manager_rows.append(row)
+
+    standings_df = pd.DataFrame(manager_rows)
+    st.dataframe(standings_df, use_container_width=True, hide_index=True, height=420)
+
+    if n_managers_with_data == 0:
+        st.info(
+            "Could not retrieve squad picks for any manager in this league for "
+            f"GW {current_gw} yet -- picks are usually visible once a manager has "
+            "set their team for the gameweek; try again closer to the deadline."
+        )
+        return
+
+    # Effective ownership across the FULL predicted player pool, not just
+    # players someone in the league happens to own -- a player 0% of the
+    # league has is exactly the differential case that matters most, and
+    # it would silently disappear from a table built only from owned
+    # players.
+    eo_df = df_live[['id', 'web_name', 'team_name', 'position', 'final_xp']].copy()
+    eo_df['Ownership %'] = (eo_df['id'].map(ownership_count).fillna(0) * 100 / n_managers_with_data).round(1)
+    eo_df['Effective Ownership %'] = (eo_df['id'].map(ownership_weight).fillna(0) * 100 / n_managers_with_data).round(1)
+    eo_df['Projected xP'] = eo_df['final_xp'].round(1)
+    eo_df = eo_df.rename(columns={'web_name': 'Player', 'team_name': 'Team', 'position': 'Pos'})
+
+    st.markdown("#### 👥 Effective Ownership")
+    st.caption(
+        "Weights each owning manager by their multiplier this gameweek (captain = "
+        "x2, triple captain = x3, benched = x0) -- this is what actually moves you "
+        "up or down **this league**, not FPL's global \"selected by\" percentage. A "
+        "player can exceed 100% effective ownership if enough of the league has "
+        "them captained."
+    )
+    owned = eo_df[eo_df['Ownership %'] > 0].sort_values('Effective Ownership %', ascending=False)
+    st.dataframe(
+        owned[['Player', 'Team', 'Pos', 'Ownership %', 'Effective Ownership %', 'Projected xP']].head(25),
+        use_container_width=True, hide_index=True
+    )
+
+    st.markdown("#### 💎 Differentials")
+    st.caption("Players projected well for the upcoming gameweek that fewer than 30% of this league owns.")
+    diffs = eo_df[eo_df['Ownership %'] < 30].sort_values('Projected xP', ascending=False)
+    if diffs.empty or diffs['Projected xP'].max() <= 0:
+        st.info("No standout differentials found for this gameweek.")
+    else:
+        st.dataframe(
+            diffs[['Player', 'Team', 'Pos', 'Ownership %', 'Projected xP']].head(20),
+            use_container_width=True, hide_index=True
+        )
+
 # --- SIDEBAR CONTROL PANEL ---
 st.sidebar.header("⚙️ Control Panel")
 if IS_PRESEASON:
@@ -885,6 +1301,51 @@ try:
         st.sidebar.caption("Project Established: August 2026\nCurrent Engine: CatalanPlays Engine v1.2")
 except FileNotFoundError:
     st.sidebar.caption("Project Established: August 2026\nCurrent Engine: CatalanPlays Engine v1.2")
+
+# --- MULTI-GAMEWEEK PROJECTIONS EXPORT ---
+# Feeds the open-source FPL MILP solvers (solioanalytics/open-fpl-solver,
+# formerly sertalpbilal/FPL-Optimization-Tools -- same repo, renamed) --
+# multi-gameweek planning, free-transfer valuation, chip strategy and
+# point-hit decisions are exactly what "Rate My Team" doesn't do, and
+# none of it should be rebuilt here. CSV column layout verified directly
+# against that repo's own parser (dev/data_parser.py, dev/solver.py) --
+# see src/projections.py's module docstring for the specifics.
+st.sidebar.divider()
+st.sidebar.markdown("### 📤 Multi-GW Projections Export")
+projection_horizon = st.sidebar.number_input(
+    "Horizon (gameweeks)", min_value=1, max_value=10, value=5, step=1,
+    help="How many gameweeks ahead to project, starting from the current/next gameweek."
+)
+st.sidebar.caption(
+    "For the open-source FPL solvers (solioanalytics/open-fpl-solver, "
+    "formerly FPL-Optimization-Tools) -- handles multi-gameweek planning, "
+    "transfer/chip strategy and point hits that this app doesn't. "
+    "**Fixture context (opponent, clean-sheet odds) updates per gameweek; "
+    "form (minutes, ICT) is frozen at today's values** -- the further out "
+    "a gameweek is, the more its number is really just current form "
+    "against that fixture, not a forecast of how form will have moved by "
+    "then. Double gameweeks are scored as a single fixture (known "
+    "under-count, not fixed here)."
+)
+if st.sidebar.button("Generate projections", key="gen_projections"):
+    if raw_json and model:
+        with st.spinner("Running predictions across the horizon..."):
+            proj_df, proj_gws = build_projection_csv(raw_json, model, horizon=int(projection_horizon))
+        st.session_state["projection_csv"] = proj_df.to_csv(index=False)
+        st.session_state["projection_gws"] = proj_gws
+    else:
+        st.sidebar.error("No live data available to build projections from.")
+
+if "projection_csv" in st.session_state:
+    gws = st.session_state.get("projection_gws", [])
+    gw_label = f"GW{gws[0]}-{gws[-1]}" if gws else "projections"
+    st.sidebar.download_button(
+        "⬇️ Download projections.csv",
+        data=st.session_state["projection_csv"],
+        file_name="projections.csv",
+        mime="text/csv",
+        help=f"Covers {gw_label}. Save into the solver's data/ folder and set \"datasource\": \"projections\" in its settings.",
+    )
 
 # --- REAL-TIME MATCHDAY INTELLIGENCE ---
 if raw_json and 'static' in raw_json and 'events' in raw_json['static']:
@@ -940,35 +1401,35 @@ if raw_json and 'static' in raw_json and 'events' in raw_json['static']:
                 for idx, f in enumerate(gw_fixes):
                     h_team = teams_dict.get(f.get('team_h'), str(f.get('team_h')))
                     a_team = teams_dict.get(f.get('team_a'), str(f.get('team_a')))
-                    started = f.get('started', False)
-                    finished = f.get('finished', False)
                     h_score = f.get('team_h_score', 0)
                     a_score = f.get('team_a_score', 0)
-                    ko_raw = f.get('kickoff_time')
-                    ko_str = format_timestamp_tz(ko_raw, selected_tz, fmt="%a %H:%M Local") if ko_raw else ""
 
-                    if finished:
-                        status_str = f"✅ {h_team} {h_score}-{a_score} {a_team}"
-                        sub_str = "FT"
-                    elif started:
-                        status_str = f"🔴 {h_team} {h_score}-{a_score} {a_team}"
-                        sub_str = "LIVE"
+                    # Single source of truth for fixture state -- see
+                    # src/data_loader.py::fixture_status for why `finished`
+                    # alone isn't enough (it lags real match-end by up to an
+                    # hour). The emoji is derived from css_class rather than
+                    # re-checking started/finished, so there's exactly one
+                    # place that can disagree with itself.
+                    label, css_class = fixture_status(f, selected_tz)
+                    emoji = {"status-ft": "✅", "status-live": "🔴", "status-upcoming": "📅"}[css_class]
+                    if css_class == "status-upcoming":
+                        status_str = f"{emoji} {h_team} vs {a_team}"
                     else:
-                        status_str = f"📅 {h_team} vs {a_team}"
-                        sub_str = ko_str
+                        status_str = f"{emoji} {h_team} {h_score}-{a_score} {a_team}"
 
                     col_target = fix_cols[idx % 5]
                     with col_target:
-                        st.caption(f"**{status_str}** | `{sub_str}`")
+                        render_html(f'<div style="font-size:14px; margin-bottom:4px;"><strong>{status_str}</strong> | <span class="{css_class}" style="font-family: var(--font-mono); font-weight:600;">{label}</span></div>')
 
 st.markdown("---")
 
 # --- TABS ---
-tab_pred, tab_hist, tab_hauls, tab_info = st.tabs(["🔮 Predictions", "📊 Player History", "🏆 Hall of Fame", "ℹ️ Documentation"])
+tab_pred, tab_accuracy, tab_league, tab_hist, tab_hauls, tab_info = st.tabs(["🔮 Predictions", "📈 Accuracy", "🏟️ Mini-League", "📊 Player History", "🏆 Hall of Fame", "ℹ️ Documentation"])
 
 # === TAB 1: LIVE PREDICTIONS ===
 with tab_pred:
-    render_last_gameweek_recap(RECAP_GW)
+    render_season_points_explorer(df_live, raw_json)
+    st.markdown("---")
 
     totw_squad, totw_info = select_team_of_the_week(df_live)
     if totw_squad is not None:
@@ -1070,6 +1531,14 @@ with tab_pred:
     st.markdown("---")
     # Render Rate My Team Evaluator
     render_rate_my_team_section(df_live, raw_json, CURRENT_GW)
+
+# === TAB: ACCURACY (PUBLIC PREDICTED-VS-ACTUAL RECORD) ===
+with tab_accuracy:
+    render_accuracy_page()
+
+# === TAB: MINI-LEAGUE (GROUP VIEW) ===
+with tab_league:
+    render_mini_league_section(df_live, raw_json, CURRENT_GW)
 
 # === TAB 2: PLAYER HISTORY (ZERO DATA LEAKAGE) ===
 with tab_hist:

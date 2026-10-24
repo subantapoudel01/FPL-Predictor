@@ -9,6 +9,10 @@ env/
 ENV/
 .venv/
 
+# Secrets / environment variables
+.env
+.env.*
+
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 */.ipynb_checkpoints/*
@@ -38,3 +42,13 @@ Docs/
 
 # Temporary logs
 *.log
+
+# Large local datasets. Note: Data/Cleaned/model_ready_data.csv and the
+# other CSVs already committed to this repo stay tracked (a .gitignore
+# rule never untracks a file already in git) and the app's pre-season
+# baseline fallback in src/features.py depends on that exact file being
+# present -- this rule only stops *new*, not-yet-tracked CSVs (scratch
+# exports, re-pulled raw data) from being added by accident. Updating an
+# already-tracked CSV on purpose still works with `git add`; git only
+# needs `-f` for a CSV that was never tracked before.
+*.csv
