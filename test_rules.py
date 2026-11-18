@@ -23,7 +23,7 @@ project_root = Path(__file__).resolve().parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from src.predictor import load_model, make_predictions
+from src.predictor import load_position_models, make_predictions
 
 
 def run_validation(season="2025-26", dataset_path=None):
@@ -78,11 +78,29 @@ def run_validation(season="2025-26", dataset_path=None):
     test_df["starter_prob"] = test_df["rolling_3_minutes"].apply(
         lambda m: 100 if m >= 60 else (75 if m >= 45 else (25 if m >= 30 else 5))
     )
+    # make_predictions()'s captaincy-scoring section does df.get(col, default)
+    # at the whole-DataFrame level for these two -- unlike row.get() inside
+    # its per-row .apply(), a *missing* column there returns the scalar
+    # default itself (not a Series), and calling .fillna()/pd.to_numeric on
+    # that scalar raises. model_ready_data.csv (this script's own dataset)
+    # doesn't carry either column, so both need a real stub column here.
+    if "expected_goal_involvements_per_90" not in test_df.columns:
+        test_df["expected_goal_involvements_per_90"] = 0.0
+    if "penalties_order" not in test_df.columns:
+        test_df["penalties_order"] = np.nan
 
     # 3. Load Model & Generate Predictions
-    model = load_model()
+    # Uses the current production model (the per-position ensemble
+    # make_predictions() actually dispatches to today), not the legacy
+    # single LinearRegression this script originally validated against --
+    # load_model()/the legacy model no longer works with make_predictions()
+    # now that it dispatches on src/config.py::USE_COMPONENT_MODEL and
+    # expects a model *bundle* (dict of positions/features), not a bare
+    # sklearn estimator. What this script measures (does the rule layer
+    # help vs. raw_xp alone) is unchanged by which model produces raw_xp.
+    model = load_position_models()
     if model is None:
-        print("[ERROR] Could not load model from Models/linear_reg_v1.pkl")
+        print("[ERROR] Could not load model from Models/position_models_v1.pkl")
         return
 
     preds_df = make_predictions(test_df, model)

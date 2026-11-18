@@ -1,15 +1,25 @@
-# ⚽ CatalanPlays — Explainable AI & Decision Engine for Fantasy Premier League
+# FPL Predictor
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://catalan-fpl.streamlit.app)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
-CatalanPlays is an open-source Expected Points ($\text{xP}$) forecasting and squad optimization suite for Fantasy Premier League managers. 
+Personal applied machine learning project by Subanta Poudel. The app
+forecasts Fantasy Premier League points using position-specific XGBoost and
+Random Forest ensembles. It shows adjusted points and a separate captain
+ranking.
+
+In the saved 2025-26 backtest (38 gameweeks, 29,338 player-gameweek rows),
+the ensemble had MAE 1.167 points versus 1.055 for linear regression. Mean
+rank correlation improved from 0.684 to 0.693. These results measure base
+forecasts before adjustments.
 
 ---
 
-## ❓ What is ?
+## ❓ What is FPL Predictor?
 
-CatalanPlays is an intelligent decision-support application built for Fantasy Premier League (FPL) managers. Instead of relying on gut feeling, the platform analyzes over 110,000 historical match records to forecast upcoming player performance in real time.
+FPL Predictor is an explainable decision-support application for Fantasy
+Premier League managers. It forecasts upcoming player performance and
+explains the adjusted points shown to users.
 
 Unlike traditional "black-box" artificial intelligence that simply outputs a number without context, CatalanPlays uses an **Explainable AI framework**—every projection clearly explains why a player is expected to score points (factoring in recent form, matchup difficulty, clean sheet odds, and squad rotation risks). Users can enter their unique FPL Team ID to immediately receive tailored starting XI optimizations and budget-compliant transfer recommendations.
 
@@ -27,9 +37,9 @@ Unlike traditional "black-box" artificial intelligence that simply outputs a num
 
 ## 🛠️ Tech Stack & Architecture
 
-- **Backend / Modeling:** Python, Scikit-learn (Linear Regression Baseline), Pandas, PyArrow
+- **Backend / Modeling:** Python, Scikit-learn, XGBoost, Random Forest, Pandas, PyArrow
 - **Dashboard / Frontend:** Streamlit, Plotly Express, Custom Responsive CSS
-- **Data Ingestion:** Official Fantasy Premier League REST API + Vaastav Multi-Season Historical Archive
+- **Data Ingestion:** Official Fantasy Premier League REST API + Vaastav Multi-Season Historical Archive + Understat historical enrichment
 - **Security:** CSRF protection, sanitized regex inputs, trimmed API payloads, zero hardcoded credentials
 
 ---
@@ -37,11 +47,64 @@ Unlike traditional "black-box" artificial intelligence that simply outputs a num
 ## 🚀 Quickstart
 
 ```bash
-git clone https://github.com/subantapoudel01/FPL-Predictor.git
-cd FPL-Predictor
-pip install -r requirements.txt
-streamlit run app.py
+brew install python@3.11 libomp
+/opt/homebrew/bin/python3.11 -m venv ~/.venvs/fpl-macos
+~/.venvs/fpl-macos/bin/python -m pip install -r local-ai/requirements-local.txt
+~/.venvs/fpl-macos/bin/python -m pip install scikit-learn==1.9.0
+~/.venvs/fpl-macos/bin/python -m pip check
+~/.venvs/fpl-macos/bin/python -m streamlit run app.py
 ```
+
+The tested macOS runtime is Python 3.11.18. `local-ai/requirements-local.txt`
+pins NumPy 1.26.4, pandas 2.2.3, scikit-learn 1.4.2, SciPy 1.13.1,
+joblib 1.4.2, Streamlit 1.67.0, requests 2.34.2, Plotly 7.1.0,
+PyArrow 19.0.1, tzdata 2026.6, pytest 9.2.0, ipykernel 7.4.0, and
+matplotlib 3.9.4. The active position ensemble was trained with
+scikit-learn 1.9.0, so that pin is applied after the base profile.
+
+The active model is `Models/position_models_v1.pkl`. Linear regression is
+the baseline and the component model remains disabled.
+
+## Release verification
+
+All checks below used `~/.venvs/fpl-macos/bin/python`:
+
+| Check | Result |
+|---|---|
+| `local-ai/verify_local.py` | Passed |
+| `local-ai/verify_app.py` | Passed with synthetic API fixture and committed history |
+| `local-ai/verify_app.py --api-unavailable` | Passed |
+| `-m pytest -q` | Passed: 4 tests |
+| Live forecast | Passed: GW10; Silva vs IPS (A); finite final xP 6.175 |
+| Current live API | Passed during release check |
+
+The export currently represents one fixture per player for a gameweek. In a
+double gameweek, historical export logic keeps the first representative
+fixture/opponent rather than counting both fixtures. This remains a documented
+release limitation; live fixture data still contains the season's fixture
+rows.
+
+## Repository layout and data policy
+
+The app and its supporting pipelines are intentionally separated:
+
+| Area | Purpose | Lifecycle |
+|---|---|---|
+| `app.py`, `src/` | Live Streamlit UI, API ingestion, feature preparation, prediction dispatch, and projections | Production code |
+| `Models/` | Versioned serving and comparison model artifacts | Keep only named, evaluated model versions |
+| `Data/Raw/` | Reusable source snapshots | Keep one canonical copy of each source |
+| `Data/Cleaned/` | Notebook outputs and the committed pre-season fallback | Rebuild only as a reviewed experiment |
+| `training/`, `evaluation/` | Reproducible fitting and walk-forward evaluation | Source code and small result metadata belong in Git |
+| `Notebooks/` | Exploratory/reproducible data workflow | Do not use as the live serving path |
+| `Docs/`, `Images/` | Coursework and portfolio evidence | Supporting material, not runtime dependencies |
+| `local-ai/` | Local verification and maintainer handoff notes | Development-only |
+
+`Data/Raw/cleaned_merged_seasons.csv` is the canonical historical seasons
+snapshot. Do not add a second copy under another filename. Generated caches,
+virtual environments, notebook checkpoints, local locks, and scratch CSVs
+remain outside version control. Rebuilt datasets, models, or metrics should
+be written to a new experiment directory until their evaluation justifies
+replacing a production artifact.
 
 ---
 

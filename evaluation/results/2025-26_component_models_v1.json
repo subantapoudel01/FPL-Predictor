@@ -1,0 +1,91 @@
+{
+  "season": "2025-26",
+  "model_name": "component_models_v1",
+  "generated_at_utc": "2026-09-07T06:55:39.591947+00:00",
+  "n_gameweeks": 38,
+  "n_player_gameweeks": 29338,
+  "n_features": 18,
+  "overall": {
+    "n": 29338,
+    "rmse": 2.011814207203566,
+    "mae": 1.0816669975795303
+  },
+  "by_bucket": [
+    {
+      "bucket": "Zeros",
+      "n": 17977,
+      "rmse": 0.7400676511760574,
+      "mae": 0.4751375970268301
+    },
+    {
+      "bucket": "Blanks",
+      "n": 7132,
+      "rmse": 1.3862569134786247,
+      "mae": 1.1037066326652736
+    },
+    {
+      "bucket": "Tickers",
+      "n": 1697,
+      "rmse": 1.5647914927020796,
+      "mae": 1.2171609934109566
+    },
+    {
+      "bucket": "Haulers",
+      "n": 2532,
+      "rmse": 5.996169789038479,
+      "mae": 5.235086841725834
+    }
+  ],
+  "by_position": [
+    {
+      "position": "GKP",
+      "n": 3383,
+      "rmse": 1.4742970372586715,
+      "mae": 0.7759974635360903
+    },
+    {
+      "position": "DEF",
+      "n": 9601,
+      "rmse": 2.1787575859585044,
+      "mae": 1.2389550305159194
+    },
+    {
+      "position": "MID",
+      "n": 13119,
+      "rmse": 1.9482150660265218,
+      "mae": 1.041248880708408
+    },
+    {
+      "position": "FWD",
+      "n": 3235,
+      "rmse": 2.225319805636053,
+      "mae": 1.0984221458574104
+    }
+  ],
+  "spearman_rank_correlation_mean_per_gw": 0.6715007427887747,
+  "spearman_n_gameweeks": 38,
+  "top10_overlap_mean_per_gw": 1.0,
+  "top10_overlap_n_gameweeks": 38,
+  "bucket_definitions": {
+    "Zeros": "minutes == 0 (did not play)",
+    "Blanks": "played, actual points <= 2",
+    "Tickers": "played, actual points 3-4",
+    "Haulers": "actual points >= 5"
+  },
+  "scope_note": "Evaluates the component prediction pipeline's raw_xp (predict_all_components()'s summed output -- minutes, attacking, clean sheet, goals conceded, saves, DEFCON, bonus, cards) against raw total_points, same scope as run_position_ensemble_backtest() -- not final_xp (which additionally applies the injured/suspended/manual-override wipe; see src/predictor.py's docstring).",
+  "reference_published_one_gw_ahead_rmse": {
+    "note": "For context only -- NOT a direct comparison until this harness itself is verified against these. Different leagues/seasons/eligible-player pools are not guaranteed to line up with the buckets here.",
+    "openfpl_arxiv_2508.09992": {
+      "Zeros": 0.818,
+      "Blanks": 1.291,
+      "Tickers": 1.517,
+      "Haulers": 5.142
+    },
+    "fpl_review_paid_model": {
+      "Zeros": 0.689,
+      "Blanks": 1.189,
+      "Tickers": 1.594,
+      "Haulers": 5.172
+    }
+  }
+}

@@ -1,0 +1,15 @@
+# MacOS release profile
+-r ../requirements.txt
+numpy==1.26.4
+pandas==2.2.3
+scikit-learn==1.9.0
+scipy==1.13.1
+joblib==1.4.2
+streamlit==1.67.0
+requests==2.34.2
+plotly==7.1.0
+pyarrow==19.0.1
+tzdata==2026.6
+pytest==9.2.0
+ipykernel==7.4.0
+matplotlib==3.9.4

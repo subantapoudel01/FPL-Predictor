@@ -1,0 +1,91 @@
+{
+  "season": "2025-26",
+  "model_name": "position_models_v1",
+  "generated_at_utc": "2026-09-07T06:55:36.318423+00:00",
+  "n_gameweeks": 38,
+  "n_player_gameweeks": 29338,
+  "n_features": 7,
+  "overall": {
+    "n": 29338,
+    "rmse": 2.0230193445513396,
+    "mae": 1.1666580069093437
+  },
+  "by_bucket": [
+    {
+      "bucket": "Zeros",
+      "n": 17977,
+      "rmse": 1.0022654834430385,
+      "mae": 0.5804467514247175
+    },
+    {
+      "bucket": "Blanks",
+      "n": 7132,
+      "rmse": 1.6804878897306281,
+      "mae": 1.3853113690129288
+    },
+    {
+      "bucket": "Tickers",
+      "n": 1697,
+      "rmse": 1.3162924754433272,
+      "mae": 1.0368293202965717
+    },
+    {
+      "bucket": "Haulers",
+      "n": 2532,
+      "rmse": 5.583243747759272,
+      "mae": 4.799834642970256
+    }
+  ],
+  "by_position": [
+    {
+      "position": "GKP",
+      "n": 3383,
+      "rmse": 1.4545659656892647,
+      "mae": 0.6525302324857294
+    },
+    {
+      "position": "DEF",
+      "n": 9601,
+      "rmse": 2.1803007333732505,
+      "mae": 1.2652923540898213
+    },
+    {
+      "position": "MID",
+      "n": 13119,
+      "rmse": 1.9951291904832489,
+      "mae": 1.2138040088546915
+    },
+    {
+      "position": "FWD",
+      "n": 3235,
+      "rmse": 2.1569194911816285,
+      "mae": 1.220382116360443
+    }
+  ],
+  "spearman_rank_correlation_mean_per_gw": 0.6926339110456469,
+  "spearman_n_gameweeks": 38,
+  "top10_overlap_mean_per_gw": 1.1578947368421053,
+  "top10_overlap_n_gameweeks": 38,
+  "bucket_definitions": {
+    "Zeros": "minutes == 0 (did not play)",
+    "Blanks": "played, actual points <= 2",
+    "Tickers": "played, actual points 3-4",
+    "Haulers": "actual points >= 5"
+  },
+  "scope_note": "Evaluates the production per-position ensemble (XGBoost + RandomForest, median-blended, one model per GKP/DEF/MID/FWD, trained with OpenFPL-style balanced sample weighting) against raw total_points -- same scope as run_backtest() (not final_xp; see that function's docstring).",
+  "reference_published_one_gw_ahead_rmse": {
+    "note": "For context only -- NOT a direct comparison until this harness itself is verified against these. Different leagues/seasons/eligible-player pools are not guaranteed to line up with the buckets here.",
+    "openfpl_arxiv_2508.09992": {
+      "Zeros": 0.818,
+      "Blanks": 1.291,
+      "Tickers": 1.517,
+      "Haulers": 5.142
+    },
+    "fpl_review_paid_model": {
+      "Zeros": 0.689,
+      "Blanks": 1.189,
+      "Tickers": 1.594,
+      "Haulers": 5.172
+    }
+  }
+}
