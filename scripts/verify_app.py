@@ -42,7 +42,7 @@ def main():
             return 1
         input_label = "live API snapshot"
     else:
-        fixture = repo / "local-ai" / "fixtures" / "api_sample.json"
+        fixture = repo / "tests" / "fixtures" / "api_sample.json"
         payload = json.loads(fixture.read_text(encoding="utf-8"))
         input_label = "labelled synthetic API fixture"
 
