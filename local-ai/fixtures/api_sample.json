@@ -1,0 +1,20 @@
+{
+  "static": {
+    "elements": [
+      {"id": 1, "code": 1, "first_name": "Test", "second_name": "Keeper", "web_name": "Keeper", "element_type": 1, "team": 1, "now_cost": 50, "status": "a", "chance_of_playing_next_round": 100, "minutes": 450, "form": "3.0", "ict_index": "5.0", "creativity": "1.0", "influence": "10.0", "threat": "1.0", "total_points": 20, "goals_scored": 0, "assists": 0, "bonus": 2, "bps": 100, "selected_by_percent": "10.0"},
+      {"id": 2, "code": 2, "first_name": "Test", "second_name": "Defender", "web_name": "Defender", "element_type": 2, "team": 1, "now_cost": 55, "status": "a", "chance_of_playing_next_round": 100, "minutes": 450, "form": "4.0", "ict_index": "8.0", "creativity": "20.0", "influence": "30.0", "threat": "10.0", "total_points": 25, "goals_scored": 1, "assists": 1, "bonus": 3, "bps": 120, "selected_by_percent": "12.0"},
+      {"id": 3, "code": 3, "first_name": "Test", "second_name": "Midfielder", "web_name": "Midfielder", "element_type": 3, "team": 2, "now_cost": 80, "status": "a", "chance_of_playing_next_round": 100, "minutes": 450, "form": "6.0", "ict_index": "20.0", "creativity": "50.0", "influence": "40.0", "threat": "30.0", "total_points": 35, "goals_scored": 3, "assists": 2, "bonus": 5, "bps": 180, "selected_by_percent": "25.0"},
+      {"id": 4, "code": 4, "first_name": "Test", "second_name": "Forward", "web_name": "Forward", "element_type": 4, "team": 2, "now_cost": 90, "status": "a", "chance_of_playing_next_round": 100, "minutes": 450, "form": "7.0", "ict_index": "25.0", "creativity": "30.0", "influence": "50.0", "threat": "60.0", "total_points": 40, "goals_scored": 5, "assists": 1, "bonus": 6, "bps": 200, "selected_by_percent": "30.0"}
+    ],
+    "teams": [
+      {"id": 1, "name": "Test City", "short_name": "TCI", "strength": 4, "strength_overall_home": 4, "strength_overall_away": 4, "strength_attack_home": 4, "strength_attack_away": 4, "strength_defence_home": 4, "strength_defence_away": 4},
+      {"id": 2, "name": "Test United", "short_name": "TUT", "strength": 3, "strength_overall_home": 3, "strength_overall_away": 3, "strength_attack_home": 3, "strength_attack_away": 3, "strength_defence_home": 3, "strength_defence_away": 3}
+    ],
+    "events": [
+      {"id": 10, "name": "Gameweek 10", "is_current": true, "is_next": false, "finished": false}
+    ]
+  },
+  "fixtures": [
+    {"id": 1, "event": 10, "team_h": 1, "team_a": 2, "team_h_difficulty": 3, "team_a_difficulty": 3, "started": false, "finished": false, "finished_provisional": false}
+  ]
+}

@@ -216,11 +216,21 @@ def _make_predictions_component(df, model, is_preseason=False):
     df['reasoning'] = results['reasoning'].fillna(f"{'(Prior season baseline) ' if is_preseason else ''}0.0 pts")
 
     df['val_m'] = df['value'].apply(lambda v: (v / 10.0 if v > 20 else v) if pd.notna(v) else 0.0)
-    xgi90 = pd.to_numeric(df.get('expected_goal_involvements_per_90', 0.0), errors='coerce').fillna(0.0)
+    xgi90 = pd.to_numeric(
+        df['expected_goal_involvements_per_90']
+        if 'expected_goal_involvements_per_90' in df.columns
+        else pd.Series(0.0, index=df.index),
+        errors='coerce',
+    ).fillna(0.0)
     df['xgi_per_90'] = xgi90
     df['captain_eligible'] = df['position'].isin(['MID', 'FWD']) | ((df['position'] == 'DEF') & (xgi90 > 0.30))
 
-    pen_order = pd.to_numeric(df.get('penalties_order', np.nan), errors='coerce')
+    pen_order = pd.to_numeric(
+        df['penalties_order']
+        if 'penalties_order' in df.columns
+        else pd.Series(np.nan, index=df.index),
+        errors='coerce',
+    )
     df['is_penalty_taker'] = pen_order == 1
     price_mult = np.where(df['val_m'] >= 9.5, 1.25, 1.0)
     pen_mult = np.where(df['is_penalty_taker'], 1.15, 1.0)
@@ -411,7 +421,12 @@ def _make_predictions_position_ensemble(df, model, is_preseason=False):
     # goal involvement rate clears a genuine attacking threshold -- not a
     # proxy, `expected_goal_involvements_per_90` is FPL's own official xGI
     # rate for that player.
-    xgi90 = pd.to_numeric(df.get('expected_goal_involvements_per_90', 0.0), errors='coerce').fillna(0.0)
+    xgi90 = pd.to_numeric(
+        df['expected_goal_involvements_per_90']
+        if 'expected_goal_involvements_per_90' in df.columns
+        else pd.Series(0.0, index=df.index),
+        errors='coerce',
+    ).fillna(0.0)
     df['xgi_per_90'] = xgi90
     df['captain_eligible'] = df['position'].isin(['MID', 'FWD']) | ((df['position'] == 'DEF') & (xgi90 > 0.30))
 
@@ -423,7 +438,12 @@ def _make_predictions_position_ensemble(df, model, is_preseason=False):
     # taker; deliberately not a hardcoded list of player names, which would
     # silently go stale the moment a transfer or injury changes who takes
     # penalties for a given club.
-    pen_order = pd.to_numeric(df.get('penalties_order', np.nan), errors='coerce')
+    pen_order = pd.to_numeric(
+        df['penalties_order']
+        if 'penalties_order' in df.columns
+        else pd.Series(np.nan, index=df.index),
+        errors='coerce',
+    )
     df['is_penalty_taker'] = pen_order == 1
     price_mult = np.where(df['val_m'] >= 9.5, 1.25, 1.0)
     pen_mult = np.where(df['is_penalty_taker'], 1.15, 1.0)
