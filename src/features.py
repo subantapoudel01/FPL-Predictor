@@ -188,6 +188,46 @@ def _live_team_rolling_goals(fixtures, teams_map, windows=(5, 10)):
     return result
 
 
+def detect_target_gameweek(events, now=None):
+    """
+    Return the live/next gameweek for a real FPL event payload.
+
+    An unfinished event marked is_current stays live. Once that event is
+    finished, choose the scheduled event whose official deadline is future
+    rather than trusting is_current/is_next flags that lag behind reality.
+    Return None when the season has ended or no future-deadline event remains.
+    """
+    if now is None:
+        now = pd.Timestamp.now(tz='UTC')
+    elif now.tzinfo is None:
+        now = pd.Timestamp(now).tz_localize('UTC')
+    else:
+        now = pd.Timestamp(now)
+
+    for event in events:
+        if event.get('is_current') and not event.get('finished'):
+            return event['id']
+
+    candidates = []
+    for event in events:
+        if event.get('finished'):
+            continue
+        deadline = event.get('deadline_time')
+        if not deadline:
+            continue
+        try:
+            deadline_ts = pd.to_datetime(deadline, utc=True)
+        except (TypeError, ValueError):
+            continue
+        if deadline_ts > now:
+            candidates.append((deadline_ts, event['id']))
+
+    if candidates:
+        candidates.sort(key=lambda item: item[0])
+        return candidates[0][1]
+    return None
+
+
 def process_data(api_data, target_gw=None):
     """
     Converts raw API JSON into a Model-Ready DataFrame.
@@ -197,22 +237,15 @@ def process_data(api_data, target_gw=None):
     events = static.get('events', [])
     
     # 1. Identify Target Gameweek & Pre-Season Status
-    # `is_next` flips to the FOLLOWING gameweek the moment the current
-    # gameweek's deadline passes -- while its own matches are still being
-    # played (is_current=True, finished=False). Checking is_next first
-    # meant the app jumped to predicting next week's gameweek the instant
-    # a deadline passed, before this week had even kicked off. `is_current`
-    # must win whenever it's set; only fall through to is_next once the
-    # current gameweek has actually finished.
-    active_event = next((e for e in events if e.get('is_current')), None)
-    if active_event is None:
-        active_event = next((e for e in events if e.get('is_next')), None)
-    if active_event is None:
-        active_event = next((e for e in events if not e.get('finished')), None)
-
-    detected_gw = active_event['id'] if active_event else 1
+    detected_gw = detect_target_gameweek(events)
+    season_finished = detected_gw is None
+    if season_finished:
+        finished_ids = [e['id'] for e in events if e.get('finished')]
+        detected_gw = max(finished_ids) if finished_ids else 1
     if target_gw is None:
         target_gw = detected_gw
+    else:
+        season_finished = False
         
     gw1_fixtures = [f for f in fixtures if f.get('event') == 1]
     gw1_started = any(f.get('started', False) or f.get('finished', False) for f in gw1_fixtures)
@@ -220,6 +253,7 @@ def process_data(api_data, target_gw=None):
     completed_gws = sum(1 for e in events if e.get('finished', False))
         
     df = pd.DataFrame(static['elements'])
+    df['season_finished'] = season_finished
     
     # Map Position & Value early for fallback matching
     df['position'] = df['element_type'].map({1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD'})

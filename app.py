@@ -40,7 +40,7 @@ def sanitize_search_input(query):
 
 # --- APP CONFIGURATION ---
 st.set_page_config(
-    page_title="CatalanPlays",
+    page_title="FPL Forecast Lab",
     layout="wide",
     page_icon="⚽"
 )
@@ -110,9 +110,8 @@ code, pre, .stCodeBlock {
 """)
 
 # --- HEADER  ---
-st.title("⚽ CatalanPlays")
-st.markdown("**Created by Subanta Poudel** | *Hybrid Intelligence Expected Points (xP) Engine*")
-st.caption("Project Established: August 2026 | Current Engine: CatalanPlays Engine v1.2")
+st.title("⚽ FPL Forecast Lab")
+st.markdown("**By Subanta Poudel**")
 st.markdown("---")
 
 # --- DATA INGESTION LAYER ---
@@ -189,6 +188,8 @@ if not raw_json or not model:
 # Pre-calculate Live Data
 df_live, CURRENT_GW, IS_PRESEASON = process_data(raw_json, target_gw=None)
 df_live = make_predictions(df_live, model, is_preseason=IS_PRESEASON)
+if df_live.get('season_finished', pd.Series(False, index=df_live.index)).fillna(False).any():
+    st.warning(f"🏁 The FPL season is complete. Showing the final gameweek (GW {CURRENT_GW}); forecasts are no longer for a future round.")
 
 # --- CURRENT GAMEWEEK EVENT LOOKUP ---
 # Used by the deadline/fixtures banner further down so it can never disagree
@@ -838,6 +839,8 @@ def render_rate_my_team_section(df_live, raw_json, current_gw):
 
         picks_df = pd.DataFrame(team_data['picks'])
         gw_used = team_data.get('gw', current_gw)
+        if gw_used != current_gw:
+            st.caption(f"Published picks source: Gameweek {gw_used}; forecasts shown for Gameweek {current_gw}.")
         
         merged = pd.merge(picks_df, df_live, left_on='element', right_on='id', how='left', suffixes=('_pick', '_pred'))
         
@@ -1295,12 +1298,12 @@ try:
     with open('metrics.json', 'r') as f:
         metrics = json.load(f)
         st.sidebar.divider()
-        st.sidebar.markdown("### 🧠 Model Diagnostics")
+        st.sidebar.markdown("### 🧠 Legacy Model Diagnostics")
         st.sidebar.metric("RMSE (Error)", f"{metrics.get('rmse', 'N/A')}", delta_color="inverse")
         st.sidebar.metric("R² (Accuracy)", f"{metrics.get('r2', 'N/A')}")
-        st.sidebar.caption("Project Established: August 2026\nCurrent Engine: CatalanPlays Engine v1.2")
+        st.sidebar.caption("Legacy metrics from the historical baseline model.")
 except FileNotFoundError:
-    st.sidebar.caption("Project Established: August 2026\nCurrent Engine: CatalanPlays Engine v1.2")
+    st.sidebar.caption("Legacy metrics from the historical baseline model.")
 
 # --- MULTI-GAMEWEEK PROJECTIONS EXPORT ---
 # Feeds the open-source FPL MILP solvers (solioanalytics/open-fpl-solver,
@@ -1746,9 +1749,9 @@ with tab_info:
     
     st.subheader("1. Architecture")
     st.markdown("""
-    The **CatalanPlays Engine v1.2** uses a hybrid architecture:
+    **FPL Forecast Lab** uses a hybrid architecture:
     * **Data Layer:** Live API ingestion from FPL endpoints.
-    * **Model Layer:** Linear Regression trained on 2021–2026 historical data.
+    * **Model Layer:** Position-specific XGBoost and Random Forest ensembles.
     * **Logic Layer:** Rule-based adjustments for 'Pep Roulette' (Rotation) and Fixture Difficulty.
     """)
     
@@ -1757,7 +1760,8 @@ with tab_info:
     with c1:
         st.subheader("✅ Capabilities")
         st.success("""
-        * **Hybrid AI:** Combines Linear Regression with Expert Rules.
+        * **Active Model:** Position-specific XGBoost and Random Forest ensembles.
+        * **Baseline:** Linear regression retained for comparison.
         * **Live Context:** Adjusts for Injuries, Fixture Difficulty, and Rotation Risks.
         * **Explainable Math:** Outputs step-by-step reasoning breakdown for every player.
         * **Bias Correction:** Includes a "Big Club Tax" for non-premium assets.
@@ -1771,7 +1775,7 @@ with tab_info:
         """)
 
     st.subheader("3. Credits & Timeline")
-    st.text(f"Developed by Subanta Poudel\nProject Established: August 2026\nCurrent Engine: CatalanPlays Engine v1.2\nLast Updated: {datetime.now().strftime('%Y-%m-%d')}")
+    st.text(f"By Subanta Poudel\nActive model: Position-specific XGBoost and Random Forest ensemble\nBaseline: Linear regression\nLast Updated: {datetime.now().strftime('%Y-%m-%d')}")
 
 # --- FOOTER ---
 st.markdown("---")
@@ -1791,6 +1795,6 @@ render_html("""
     }
     </style>
     <div class="footer">
-        © 2026 CatalanPlays Engine v1.2 | Created by <b>Subanta Poudel</b> | Project Established: August 2026
+        FPL Forecast Lab · Subanta Poudel
     </div>
     """)
