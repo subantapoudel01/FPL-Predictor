@@ -188,13 +188,15 @@ def _live_team_rolling_goals(fixtures, teams_map, windows=(5, 10)):
     return result
 
 
-def detect_target_gameweek(events, now=None):
+def detect_target_gameweek(events, now=None, fixtures=None):
     """
     Return the live/next gameweek for a real FPL event payload.
 
-    An unfinished event marked is_current stays live. Once that event is
-    finished, choose the scheduled event whose official deadline is future
-    rather than trusting is_current/is_next flags that lag behind reality.
+    An unfinished event marked is_current stays live while its fixtures are
+    pending or underway. If fixtures are present and all are complete, choose
+    the scheduled event whose official deadline is future rather than trusting
+    is_current/is_next flags that lag behind reality. An empty fixture list is
+    not treated as proof of completion.
     Return None when the season has ended or no future-deadline event remains.
     """
     if now is None:
@@ -204,13 +206,27 @@ def detect_target_gameweek(events, now=None):
     else:
         now = pd.Timestamp(now)
 
+    def fixtures_complete(event_id):
+        event_fixtures = [
+            fixture for fixture in (fixtures or [])
+            if fixture.get('event') == event_id
+        ]
+        return bool(event_fixtures) and all(
+            fixture.get('finished') or fixture.get('finished_provisional')
+            for fixture in event_fixtures
+        )
+
     for event in events:
-        if event.get('is_current') and not event.get('finished'):
+        if (
+            event.get('is_current')
+            and not event.get('finished')
+            and not fixtures_complete(event.get('id'))
+        ):
             return event['id']
 
     candidates = []
     for event in events:
-        if event.get('finished'):
+        if event.get('finished') or fixtures_complete(event.get('id')):
             continue
         deadline = event.get('deadline_time')
         if not deadline:
@@ -237,7 +253,7 @@ def process_data(api_data, target_gw=None):
     events = static.get('events', [])
     
     # 1. Identify Target Gameweek & Pre-Season Status
-    detected_gw = detect_target_gameweek(events)
+    detected_gw = detect_target_gameweek(events, fixtures=fixtures)
     season_finished = detected_gw is None
     if season_finished:
         finished_ids = [e['id'] for e in events if e.get('finished')]
