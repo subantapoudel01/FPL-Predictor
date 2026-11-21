@@ -1,19 +1,36 @@
 import streamlit as st
 import pandas as pd
 import json
+import logging
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import re
 from pathlib import Path
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 # Internal Modules
-from src.data_loader import fetch_api_data, fetch_player_live_summary, fetch_user_team, fetch_league_standings, fetch_league_squads, TZ_MAP, fixture_status
+from src.data_loader import (
+    TZ_MAP,
+    fetch_api_data,
+    fetch_league_squads,
+    fetch_league_standings,
+    fetch_player_live_summary,
+    fetch_user_team,
+)
 from src.features import process_data, fetch_full_history
-from src.predictor import load_active_model, make_predictions, ceiling_stars
+from src.gameweek_ui import (
+    render_captaincy_card,
+    render_gameweek_fixtures,
+    render_gameweek_header,
+    render_theme,
+    render_wordmark,
+)
+from src.predictor import load_active_model, make_predictions
 from src.projections import build_projection_csv
+from src.projections_ui import render_player_projections
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+LOGGER = logging.getLogger(__name__)
 
 def render_html(html):
     """
@@ -38,82 +55,6 @@ def sanitize_search_input(query):
         return ""
     return re.sub(r'[^a-zA-Z0-9\s]', '', query).strip()
 
-# --- APP CONFIGURATION ---
-st.set_page_config(
-    page_title="FPL Forecast Lab",
-    layout="wide",
-    page_icon="⚽"
-)
-
-# --- TYPOGRAPHY ---
-# Big Shoulders Display: condensed sporting/scoreboard energy, used sparingly
-# on headings only. Source Sans 3: body/UI text. IBM Plex Mono: anything
-# numeric (xP, BPS, price, RMSE/R²) so stat columns line up and read as
-# data, not prose. Streamlit's own emotion-generated classes carry higher
-# specificity than a plain selector, so the font-family overrides need
-# !important to reliably win — this is fighting a third-party framework's
-# scoped CSS, not our own cascade.
-# Known limitation: st.dataframe renders cells to an HTML canvas (glide-data-
-# grid), so these rules cannot reach text *inside* a dataframe grid — only
-# Streamlit's own UI chrome (headings, sidebar, metrics, buttons, captions).
-render_html("""
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Source+Sans+3:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
-<style>
-:root {
-    --font-display: 'Big Shoulders Display', 'Arial Narrow', sans-serif;
-    --font-body: 'Source Sans 3', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
-}
-html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"],
-.stMarkdown, p, div, label, li, button {
-    font-family: var(--font-body) !important;
-}
-/* Deliberately NOT touching `span`: Streamlit renders its icon glyphs
-   (expander chevrons, toolbar icons) as ligature text inside spans keyed
-   to a dedicated icon font — a blanket font-family override there replaces
-   the icon font and the glyph shows as its literal name ("arrow_right")
-   instead of rendering. Body text still gets Source Sans 3 through normal
-   CSS inheritance from `body` above; only the icon spans need to opt out. */
-h1 {
-    font-family: var(--font-display) !important;
-    font-weight: 800 !important;
-    letter-spacing: .2px;
-}
-h2 {
-    font-family: var(--font-display) !important;
-    font-weight: 700 !important;
-}
-h3, h4 {
-    font-family: var(--font-display) !important;
-    font-weight: 600 !important;
-}
-[data-testid="stMetricValue"] {
-    font-family: var(--font-mono) !important;
-    font-weight: 600 !important;
-}
-[data-testid="stMetricLabel"] {
-    font-family: var(--font-body) !important;
-    font-weight: 600 !important;
-}
-code, pre, .stCodeBlock {
-    font-family: var(--font-mono) !important;
-}
-.status-live {
-    color: #D64B5E !important;
-}
-.status-ft, .status-upcoming {
-    color: #8A93A6 !important;
-}
-</style>
-""")
-
-# --- HEADER  ---
-st.title("⚽ FPL Forecast Lab")
-st.markdown("**By Subanta Poudel**")
-st.markdown("---")
-
 # --- DATA INGESTION LAYER ---
 # Not itself cached: fetch_api_data() combines fetch_static_data() (ttl=3600)
 # and fetch_fixtures_data() (ttl=60) from src/data_loader.py, each cached
@@ -122,18 +63,22 @@ st.markdown("---")
 # freshness -- see src/data_loader.py::fetch_api_data for the same note.
 @st.cache_resource
 def load_ml_model():
-    # Whichever model src/config.py::USE_COMPONENT_MODEL selects -- the
-    # component pipeline (Models/component_models_v1.pkl) by default, or
-    # the previous per-position ensemble (Models/position_models_v1.pkl)
-    # if that flag is rolled back. See src/predictor.py::load_active_model.
     return load_active_model()
 
 def load_app_data():
-    raw_json = fetch_api_data()
-    if not raw_json:
-        return None, None
-    model = load_ml_model()
-    return raw_json, model
+    try:
+        raw_json = fetch_api_data()
+        if not raw_json or not raw_json.get("static", {}).get("elements"):
+            return None
+        model = load_ml_model()
+        if model is None:
+            return None
+        frame, gameweek, is_preseason = process_data(raw_json, target_gw=None)
+        predictions = make_predictions(frame, model, is_preseason=is_preseason)
+    except Exception:
+        LOGGER.exception("Failed to load the Gameweek forecast")
+        return None
+    return raw_json, model, predictions, gameweek, is_preseason
 
 @st.cache_data(ttl=604800)
 def load_historical_data(_model):
@@ -179,24 +124,6 @@ def load_historical_data(_model):
 
     return df_hist
 
-raw_json, model = load_app_data()
-
-if not raw_json or not model:
-    st.error("🚨 Critical Error: API or Model missing.")
-    st.stop()
-
-# Pre-calculate Live Data
-df_live, CURRENT_GW, IS_PRESEASON = process_data(raw_json, target_gw=None)
-df_live = make_predictions(df_live, model, is_preseason=IS_PRESEASON)
-if df_live.get('season_finished', pd.Series(False, index=df_live.index)).fillna(False).any():
-    st.warning(f"🏁 The FPL season is complete. Showing the final gameweek (GW {CURRENT_GW}); forecasts are no longer for a future round.")
-
-# --- CURRENT GAMEWEEK EVENT LOOKUP ---
-# Used by the deadline/fixtures banner further down so it can never disagree
-# with CURRENT_GW about which gameweek "now" is.
-_events_list = raw_json.get('static', {}).get('events', []) if raw_json else []
-_current_gw_event = next((e for e in _events_list if e.get('id') == CURRENT_GW), None)
-
 # --- HELPER: SEASON POINTS EXPLORER (LIVE API ONLY, NO LOCAL STORAGE) ---
 def render_season_points_explorer(df_live, raw_json):
     """
@@ -207,7 +134,7 @@ def render_season_points_explorer(df_live, raw_json):
     snapshot recap this replaced, there is nothing cached to local disk and
     nothing lost on a Streamlit Cloud redeploy.
     """
-    st.markdown("### 🔍 Season Points Explorer")
+    st.markdown("### Season points")
     st.caption("Top 50 players by total points this season. Search or filter, then pick one below for their full gameweek-by-gameweek breakdown.")
 
     c1, c2 = st.columns([2, 1])
@@ -240,13 +167,13 @@ def render_season_points_explorer(df_live, raw_json):
     )
 
     st.dataframe(
-        leaderboard.style.set_properties(**{'color': '#F2F4F8'}).format({"Price": "£{:.1f}"}),
-        use_container_width=True,
+        leaderboard.style.set_properties(**{'color': '#EFF4EE'}).format({"Price": "£{:.1f}"}),
+        width="stretch",
         height=400,
         hide_index=True
     )
 
-    st.markdown("#### 📈 Player Gameweek Breakdown")
+    st.markdown("#### Player gameweek breakdown")
     ranked_top50 = top50.sort_values(by='total_points', ascending=False)
     player_options = ranked_top50['web_name'].tolist()
     selected_player_name = st.selectbox(
@@ -285,16 +212,16 @@ def render_season_points_explorer(df_live, raw_json):
         st.metric("Best Gameweek", f"GW {int(best_row['round'])} ({int(best_row['total_points'])} pts)")
 
     hist_df['GW'] = hist_df['round'].astype(str)
-    fig = go.Figure(go.Bar(x=hist_df['GW'], y=hist_df['total_points'], marker_color='#D64B5E'))
+    fig = go.Figure(go.Bar(x=hist_df['GW'], y=hist_df['total_points'], marker_color='#DAF995'))
     fig.update_layout(
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        font_color='#F2F4F8',
+        font_color='#EFF4EE',
         xaxis_title='Gameweek',
         yaxis_title='Points',
         margin=dict(l=10, r=10, t=10, b=10)
     )
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+    st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
 
     teams_map = {t['id']: t['short_name'] for t in raw_json['static'].get('teams', [])} if raw_json and 'static' in raw_json else {}
 
@@ -313,8 +240,8 @@ def render_season_points_explorer(df_live, raw_json):
     breakdown_table = breakdown[breakdown_cols.keys()].rename(columns=breakdown_cols)
 
     st.dataframe(
-        breakdown_table.style.set_properties(**{'color': '#F2F4F8'}),
-        use_container_width=True,
+        breakdown_table.style.set_properties(**{'color': '#EFF4EE'}),
+        width="stretch",
         height=400,
         hide_index=True
     )
@@ -442,15 +369,15 @@ def render_pitch_visualizer(totw_df, totw_info, gameweek):
         
         badge_html = ""
         if name == captain_name:
-            badge_html = '<span style="background:#FFC72C; color:#1A1408; font-weight:bold; padding:1px 4px; border-radius:3px; font-size:10px; margin-left:3px;">(C)</span>'
+            badge_html = '<span style="background:#EDCD94; color:#1A1408; font-weight:bold; padding:1px 4px; border-radius:3px; font-size:10px; margin-left:3px;">(C)</span>'
         elif name == vice_name:
             badge_html = '<span style="background:#C0C0C0; color:#1A1408; font-weight:bold; padding:1px 4px; border-radius:3px; font-size:10px; margin-left:3px;">(V)</span>'
 
         return f'''
-        <div style="background: rgba(26, 34, 53, 0.95); border: 1px solid #2A3450; border-radius: 8px; padding: 6px 4px; text-align: center; flex: 1 1 70px; max-width: 95px; min-width: 65px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); box-sizing: border-box;">
-            <div style="font-weight: 700; font-size: 12px; color: #F2F4F8; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{name}{badge_html}</div>
-            <div style="font-size: 10px; color: #8891A6; margin-top: 2px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{team} · {opp}</div>
-            <div style="font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: #D64B5E; margin-top: 4px;">{xp:.1f} xP</div>
+        <div style="background: #1D2821; border: 1px solid #303C33; border-radius: 8px; padding: 6px 4px; text-align: center; flex: 1 1 70px; max-width: 95px; min-width: 65px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); box-sizing: border-box;">
+            <div style="font-weight: 700; font-size: 12px; color: #EFF4EE; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{name}{badge_html}</div>
+            <div style="font-size: 10px; color: #A9B9AA; margin-top: 2px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">{team} · {opp}</div>
+            <div style="font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: #DAF995; margin-top: 4px;">{xp:.1f} xP</div>
         </div>
         '''
 
@@ -464,10 +391,10 @@ def render_pitch_visualizer(totw_df, totw_info, gameweek):
     gkp_row = row_html(gkps)
 
     pitch_html = f'''
-    <div style="background: linear-gradient(180deg, #16233B 0%, #0F1420 100%); border: 2px solid #D64B5E; border-radius: 12px; padding: 18px 12px; margin-bottom: 25px; box-shadow: inset 0 0 40px rgba(0,0,0,0.6); position: relative;">
+    <div style="background: linear-gradient(180deg, #1D2821 0%, #101613 100%); border: 2px solid #DAF995; border-radius: 12px; padding: 18px 12px; margin-bottom: 25px; box-shadow: inset 0 0 40px rgba(0,0,0,0.6); position: relative;">
         <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.15); padding-bottom: 8px; margin-bottom: 12px; flex-wrap: wrap; gap: 6px;">
-            <div style="font-family: var(--font-display); font-weight: 700; font-size: 18px; color: #FFC72C;">⭐ AI Team of the Week — GW {gameweek}</div>
-            <div style="font-size: 13px; color: #F2F4F8;">Formation: <strong>{formation}</strong> | Squad xP: <strong style="font-family: var(--font-mono); color:#FFC72C;">{total_xp:.1f} pts</strong></div>
+            <div style="font-family: var(--font-display); font-weight: 700; font-size: 18px; color: #EDCD94;">⭐ AI Team of the Week — GW {gameweek}</div>
+            <div style="font-size: 13px; color: #EFF4EE;">Formation: <strong>{formation}</strong> | Squad xP: <strong style="font-family: var(--font-mono); color:#EDCD94;">{total_xp:.1f} pts</strong></div>
         </div>
         {fwd_row}
         {mid_row}
@@ -476,96 +403,6 @@ def render_pitch_visualizer(totw_df, totw_info, gameweek):
     </div>
     '''
     render_html(pitch_html)
-
-# --- HELPER: CAPTAINCY RATING CARD ---
-def render_captaincy_card(df_candidates):
-    """
-    Renders top 5 captaincy options for the upcoming gameweek with 5-star evaluation
-    and key rationale.
-    """
-    if df_candidates is None or df_candidates.empty:
-        return
-
-    # Captaincy eligibility: attackers, or defenders with real attacking
-    # threat (own xGI/90 > 0.30 -- see src/predictor.py). Ranked by Ceiling
-    # Score rather than plain final_xp, so a nailed budget defender with an
-    # easy fixture doesn't crowd out genuine explosive-upside attackers.
-    eligible = df_candidates[df_candidates.get('captain_eligible', False) == True]
-    if eligible.empty:
-        eligible = df_candidates  # Degrade gracefully rather than show nothing.
-
-    caps = eligible.sort_values(by='ceiling_score', ascending=False).head(5).reset_index(drop=True)
-    if caps.empty:
-        return
-
-    st.markdown("### 👑 Top Captain Picks")
-
-    # Scaled against this gameweek's own top Ceiling Score, not an absolute
-    # cutoff -- everything that survives the eligibility filter above is
-    # already a strong candidate, so an absolute threshold gave every row
-    # the same rating. Filled + empty stars both render so 4/5 and 5/5 are
-    # visually distinguishable.
-    star_counts = ceiling_stars(caps['ceiling_score'])
-
-    cap_rows = []
-    for idx, r in caps.iterrows():
-        xp = float(r.get('final_xp', 0.0))
-        ceiling = float(r.get('ceiling_score', 0.0))
-        name = r.get('web_name', '')
-        team = r.get('team_name', '')
-        opp = r.get('next_opponent', '-')
-        diff = float(r.get('next_match_difficulty', 3))
-        starter_prob = float(r.get('starter_prob', 100))
-
-        n_stars = int(star_counts.iloc[idx])
-        stars = "★" * n_stars + "☆" * (5 - n_stars)
-
-        rationale_parts = []
-        if "(H)" in opp:
-            rationale_parts.append("Home Fixture")
-        elif "(A)" in opp:
-            rationale_parts.append("Away Match")
-
-        if diff <= 2:
-            rationale_parts.append("Favorable Opponent (FDR 1-2)")
-        elif diff >= 4:
-            rationale_parts.append("Tough Matchup")
-
-        val_m = float(r.get('val_m', r.get('value', 0)))
-        if bool(r.get('is_penalty_taker', False)):
-            rationale_parts.append("Penalty Taker")
-        if val_m >= 9.5:
-            rationale_parts.append("Premium Captain Potential")
-        elif starter_prob >= 90:
-            rationale_parts.append("Nailed Starter (100%)")
-        if r.get('position') == 'DEF':
-            rationale_parts.append(f"Attacking Threat (xGI/90 {float(r.get('xgi_per_90', 0)):.2f})")
-
-        rationale_str = " · ".join(rationale_parts) if rationale_parts else "Strong Gameweek Baseline"
-
-        cap_rows.append({
-            "Rank": idx + 1,
-            "Player": f"{name} ({team})",
-            "Opponent": opp,
-            "xP": f"{xp:.1f} pts",
-            "Ceiling": f"{ceiling:.1f}",
-            "Rating": stars,
-            "Key Rationale": rationale_str
-        })
-
-    # Note: st.dataframe never interprets markdown syntax inside cell text
-    # (that's a st.markdown/st.write-only behavior) — "**bold**" would show
-    # as literal asterisks. Real emphasis on this column has to come from
-    # the Styler's CSS properties instead.
-    df_cap_display = pd.DataFrame(cap_rows)
-    st.dataframe(
-        df_cap_display.style
-            .set_properties(**{'color': '#F2F4F8'})
-            .set_properties(subset=['Player'], **{'font-weight': '700'}),
-        use_container_width=True,
-        height=210,
-        hide_index=True
-    )
 
 # --- HELPER: 5-GAMEWEEK FIXTURE TICKER ---
 def render_fixture_ticker(raw_json, current_gw):
@@ -640,19 +477,19 @@ def render_fixture_ticker(raw_json, current_gw):
         style_df = pd.DataFrame('', index=df_in.index, columns=df_in.columns)
         for idx, r in df_in.iterrows():
             t_name = r['Team']
-            style_df.loc[idx, 'Team'] = 'color: #F2F4F8; font-weight: bold;'
-            style_df.loc[idx, 'Avg FDR'] = 'color: #FFC72C; font-weight: bold;'
+            style_df.loc[idx, 'Team'] = 'color: #EFF4EE; font-weight: bold;'
+            style_df.loc[idx, 'Avg FDR'] = 'color: #EDCD94; font-weight: bold;'
             for col in gw_cols:
                 val = r[col]
                 style_df.loc[idx, col] = style_fdr_cells(val, t_name, col)
         return style_df
 
-    st.markdown("### 🗓️ 5-Gameweek FDR Schedule Ticker")
+    st.markdown("### Fixture difficulty by club")
     st.caption("Interactive 5-week schedule matrix for all 20 Premier League clubs color-coded by Fixture Difficulty Rating (FDR). Sorted by overall easiest schedule.")
     
     st.dataframe(
         df_ticker.style.apply(apply_ticker_styling, axis=None).format({"Avg FDR": "{:.2f}"}),
-        use_container_width=True,
+        width="stretch",
         height=400,
         hide_index=True
     )
@@ -800,41 +637,47 @@ def recommend_gameweek_transfer(starters, squad_df, df_live):
     }
 
 
-# --- HELPER: RATE MY TEAM (LIVE SQUAD EVALUATOR) ---
-def render_rate_my_team_section(df_live, raw_json, current_gw):
+MAX_FPL_ID = 2**53 - 1  # Largest integer Streamlit can round-trip through the browser.
+
+
+def render_fpl_id_form(param, label, button_label):
+    query_id = st.query_params.get(param, "")
+    default_id = None
+    if query_id.isascii() and query_id.isdecimal() and len(query_id) <= len(str(MAX_FPL_ID)):
+        parsed_id = int(query_id)
+        if 1 <= parsed_id <= MAX_FPL_ID:
+            default_id = parsed_id
+
+    with st.container(key="deadline_entry"):
+        with st.form(f"{param}_form", border=False):
+            entered_id = st.number_input(
+                label, min_value=1, max_value=MAX_FPL_ID, value=default_id,
+                step=1, key=f"{param}_input",
+            )
+            submitted = st.form_submit_button(button_label, type="primary")
+
+    if submitted and entered_id is not None:
+        st.query_params[param] = str(entered_id)
+        return entered_id
+    if submitted or (query_id and default_id is None):
+        st.warning(f"Enter a valid {label} to continue.")
+        return None
+    return default_id
+
+
+def render_rate_my_team_section(df_live, current_gw):
     """
     Renders the interactive "Rate My Team" squad evaluation card.
     Pulls user's 15 FPL picks via Team ID, calculates total starting XI xP,
     weakest starter link, bench optimization alert, recommended transfer plan card, and displays a full squad table.
     """
-    st.markdown("### 📊 Rate My Team (Live Squad Evaluator)")
-    st.caption("Enter your official FPL Team ID (from your FPL web URL: `entry/{team_id}/event/...`) to evaluate your starting XI projected points and bench optimization. Your ID is saved to the page URL so you can bookmark your own dashboard.")
-
-    # Pre-fill from ?team_id=... in the URL so a bookmarked/shared link
-    # reopens on the same squad without retyping the ID.
-    default_team_id = 3753
-    qp_team_id = st.query_params.get("team_id")
-    if qp_team_id:
-        try:
-            default_team_id = int(qp_team_id)
-        except (TypeError, ValueError):
-            pass
-
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        team_id = st.number_input("Enter FPL Team ID", min_value=1, value=default_team_id, step=1, key="rmt_team_id_input")
-        fetch_btn = st.button("Evaluate Squad 🚀", key="rmt_fetch_btn")
-
-    # Keep the URL in sync with whatever ID is actually showing -- covers
-    # both the button click and directly editing the number field, so the
-    # bookmarked link always matches what's on screen.
-    if team_id and str(int(team_id)) != qp_team_id:
-        st.query_params["team_id"] = str(int(team_id))
+    st.caption("Find your Team ID in your FPL URL (`/entry/123456/event/...`). The loaded ID is saved in this page’s URL.")
+    team_id = render_fpl_id_form("team_id", "FPL Team ID", "Evaluate squad")
 
     if team_id:
         team_data = fetch_user_team(int(team_id), current_gw)
-        if not team_data or 'picks' not in team_data:
-            st.warning(f"⚠️ Could not retrieve squad picks for Team ID `{team_id}` in Gameweek {current_gw}. Verify your Team ID.")
+        if not team_data or not team_data.get('picks'):
+            st.warning(f"Could not load squad picks for Team ID `{team_id}` in Gameweek {current_gw}. Check the ID in your FPL URL and try again.")
             return
 
         picks_df = pd.DataFrame(team_data['picks'])
@@ -923,15 +766,15 @@ def render_rate_my_team_section(df_live, raw_json, current_gw):
                     st.info(f"ℹ️ Club Limit: 3 players already owned from {blocked_inf['club']}. Targeting alternate option: {buy_n}")
                     
                 render_html(f"""
-                <div style="background: rgba(26, 34, 53, 0.95); border: 1px solid #2A3450; border-radius: 10px; padding: 14px 18px; margin-top: 15px; margin-bottom: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
-                    <div style="font-family: var(--font-display); font-weight: 700; font-size: 17px; color: #FFC72C; margin-bottom: 8px;">🎯 Recommended Gameweek Transfer</div>
-                    <div style="font-size: 14px; color: #F2F4F8; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;">
+                <div style="background: #1D2821; border: 1px solid #303C33; border-radius: 10px; padding: 14px 18px; margin-top: 15px; margin-bottom: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
+                    <div style="font-family: var(--font-display); font-weight: 700; font-size: 17px; color: #EDCD94; margin-bottom: 8px;">🎯 Recommended Gameweek Transfer</div>
+                    <div style="font-size: 14px; color: #EFF4EE; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <span style="background: #7f1d1d; color: #f87171; font-weight: bold; padding: 3px 8px; border-radius: 4px;">[SELL]</span>
                         <strong>{sell_n}</strong> <span style="font-family: var(--font-mono);">({sell_xp_val:.1f} xP)</span>
-                        <span style="font-size: 16px; color: #FFC72C;">➔</span>
+                        <span style="font-size: 16px; color: #EDCD94;">➔</span>
                         <span style="background: #064e3b; color: #34d399; font-weight: bold; padding: 3px 8px; border-radius: 4px;">[BUY]</span>
                         <strong>{buy_n}</strong> <span style="font-family: var(--font-mono);">({buy_xp_val:.1f} xP)</span>
-                        <span style="color: #8891A6; margin: 0 4px;">|</span>
+                        <span style="color: #A9B9AA; margin: 0 4px;">|</span>
                         <strong>Net Projected Gain: <span style="font-family: var(--font-mono); color: #4CBE86; font-size: 15px;">+{net_gain:.1f} xP</span></strong>
                     </div>
                 </div>
@@ -948,13 +791,13 @@ def render_rate_my_team_section(df_live, raw_json, current_gw):
             pos = row.get('position_pick', 1)
             
             if is_c or mult >= 2:
-                return "👑 Captain (2x)"
+                return f"Captain ({mult}×)"
             elif is_vc:
-                return "🛡️ Vice-Captain"
+                return "Vice-captain"
             elif pos <= 11:
-                return "⚡ Starter"
+                return "Starter"
             else:
-                return "🪑 Bench"
+                return "Bench"
 
         merged['Role'] = merged.apply(format_role, axis=1)
         merged['Projected Points'] = merged['final_xp'] * merged['multiplier']
@@ -966,7 +809,7 @@ def render_rate_my_team_section(df_live, raw_json, current_gw):
             'position_pred': 'Pos',
             'next_opponent': 'Opponent',
             'Role': 'Role',
-            'final_xp': 'Base xP',
+            'final_xp': 'Adjusted xP',
             'Projected Points': 'Effective xP'
         }
 
@@ -974,17 +817,17 @@ def render_rate_my_team_section(df_live, raw_json, current_gw):
 
         def style_rmt_rows(s):
             is_starter = s['Slot'] <= 11
-            is_c = "Captain" in str(s['Role'])
+            is_c = s['Role'].startswith("Captain")
             if is_c:
-                return ['background-color: #2b2410; color: #F2F4F8; font-weight: bold;' for _ in s]
+                return ['background-color: #2b2410; color: #EFF4EE; font-weight: bold;' for _ in s]
             elif is_starter:
-                return ['color: #F2F4F8;' for _ in s]
+                return ['color: #EFF4EE;' for _ in s]
             else:
-                return ['background-color: #1A2235; color: #F2F4F8;' for _ in s]
+                return ['background-color: #171F1B; color: #EFF4EE;' for _ in s]
 
         st.dataframe(
-            rmt_table.style.apply(style_rmt_rows, axis=1).format({"Base xP": "{:.1f}", "Effective xP": "{:.1f}"}),
-            use_container_width=True,
+            rmt_table.style.apply(style_rmt_rows, axis=1).format({"Adjusted xP": "{:.1f}", "Effective xP": "{:.1f}"}),
+            width="stretch",
             height=420,
             hide_index=True
         )
@@ -1019,7 +862,7 @@ def render_accuracy_page():
     number that actually can be honestly measured, labeled as exactly
     that, rather than a flattering number this project can't verify.
     """
-    st.markdown("### 📈 Accuracy")
+    st.markdown("### Season backtest")
     st.caption(
         "Predicted vs. actual points, tracked across every gameweek of a "
         "completed season — shown openly, including the weeks the model "
@@ -1064,18 +907,18 @@ def render_accuracy_page():
     )
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=gw_stats["GW"], y=gw_stats["RMSE"], mode="lines+markers", name="RMSE", line=dict(color="#D64B5E")))
-    fig.add_trace(go.Scatter(x=gw_stats["GW"], y=gw_stats["MAE"], mode="lines+markers", name="MAE", line=dict(color="#FFC72C")))
+    fig.add_trace(go.Scatter(x=gw_stats["GW"], y=gw_stats["RMSE"], mode="lines+markers", name="RMSE", line=dict(color="#DAF995")))
+    fig.add_trace(go.Scatter(x=gw_stats["GW"], y=gw_stats["MAE"], mode="lines+markers", name="MAE", line=dict(color="#EDCD94")))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font_color="#F2F4F8",
+        font_color="#EFF4EE",
         xaxis_title="Gameweek",
         yaxis_title="Error (points)",
         margin=dict(l=10, r=10, t=30, b=10),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
     # --- By outcome bucket -- the same Zeros/Blanks/Tickers/Haulers split
     # evaluation/backtest.py reports, so a visitor sees the model is judged
@@ -1087,7 +930,7 @@ def render_accuracy_page():
     )
     st.dataframe(
         bucket_df.style.format({"RMSE": "{:.2f}", "MAE": "{:.2f}"}),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
 
     # --- Biggest misses, most recent gameweek in this season -- the
@@ -1104,7 +947,7 @@ def render_accuracy_page():
     st.caption(f"Gameweek {latest_gw}")
     st.dataframe(
         disp.style.format({"Predicted": "{:.1f}", "Actual": "{:.0f}", "Predicted − Actual": "{:+.1f}"}),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
 
 
@@ -1119,44 +962,19 @@ def render_accuracy_page():
 MAX_LEAGUE_ENTRIES_FOR_SQUADS = 60
 
 
-def render_mini_league_section(df_live, raw_json, current_gw):
+def render_mini_league_section(df_live, current_gw):
     """
     Renders the Mini-League tab: standings, each manager's projected
     points and captain for the upcoming gameweek, effective ownership
     within the league (weighted by captaincy, not global "selected by"),
     and a differentials view.
     """
-    st.markdown("### 🏟️ Mini-League")
     st.caption(
-        "Enter your mini-league's ID (from its FPL page URL: "
-        "`fantasy.premierleague.com/leagues/{league_id}/standings/c`) to see the "
-        "league's standings, each manager's projected points for the upcoming "
-        "gameweek, who they've captained, and effective ownership within the "
-        "league -- the number that actually tells you which of your players move "
-        "you up or down *this* league, not the global player pool. Your league ID "
-        "is saved to the page URL so you can bookmark or share this view."
+        "Compare standings, projected points, captain picks and effective ownership in a classic FPL league. "
+        "Find the league ID in its FPL URL (`/leagues/123456/standings/c`)."
     )
-
-    default_league_id = None
-    qp_league_id = st.query_params.get("league_id")
-    if qp_league_id:
-        try:
-            default_league_id = int(qp_league_id)
-        except (TypeError, ValueError):
-            pass
-
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        league_id = st.number_input(
-            "Enter Mini-League ID", min_value=1, value=default_league_id,
-            step=1, key="ml_league_id_input"
-        )
-
-    if league_id and str(int(league_id)) != qp_league_id:
-        st.query_params["league_id"] = str(int(league_id))
-
+    league_id = render_fpl_id_form("league_id", "FPL League ID", "Load league")
     if not league_id:
-        st.info("Enter a mini-league ID above to load it.")
         return
 
     with st.spinner(f"Fetching standings for league {int(league_id)}..."):
@@ -1234,7 +1052,7 @@ def render_mini_league_section(df_live, raw_json, current_gw):
         manager_rows.append(row)
 
     standings_df = pd.DataFrame(manager_rows)
-    st.dataframe(standings_df, use_container_width=True, hide_index=True, height=420)
+    st.dataframe(standings_df, width="stretch", hide_index=True, height=420)
 
     if n_managers_with_data == 0:
         st.info(
@@ -1266,7 +1084,7 @@ def render_mini_league_section(df_live, raw_json, current_gw):
     owned = eo_df[eo_df['Ownership %'] > 0].sort_values('Effective Ownership %', ascending=False)
     st.dataframe(
         owned[['Player', 'Team', 'Pos', 'Ownership %', 'Effective Ownership %', 'Projected xP']].head(25),
-        use_container_width=True, hide_index=True
+        width="stretch", hide_index=True
     )
 
     st.markdown("#### 💎 Differentials")
@@ -1277,276 +1095,12 @@ def render_mini_league_section(df_live, raw_json, current_gw):
     else:
         st.dataframe(
             diffs[['Player', 'Team', 'Pos', 'Ownership %', 'Projected xP']].head(20),
-            use_container_width=True, hide_index=True
+            width="stretch", hide_index=True
         )
 
-# --- SIDEBAR CONTROL PANEL ---
-st.sidebar.header("⚙️ Control Panel")
-if IS_PRESEASON:
-    st.sidebar.info("System Status: **Season Has Not Started**")
-else:
-    st.sidebar.info(f"System Status: **GW {CURRENT_GW} Active**")
-
-selected_tz = st.sidebar.selectbox(
-    "🌐 Timezone",
-    ["Local / Regional", "UTC", "BST (UK / UTC+1)", "CET (Europe / UTC+2)", "NPT (Nepal / UTC+5:45)", "IST (India / UTC+5:30)", "EST (US East / UTC-5)", "PST (US West / UTC-8)"],
-    index=0,
-    help="Select your timezone to convert FPL Gameweek deadlines and match kickoff times."
-)
-
-try:
-    with open('metrics.json', 'r') as f:
-        metrics = json.load(f)
-        st.sidebar.divider()
-        st.sidebar.markdown("### 🧠 Legacy Model Diagnostics")
-        st.sidebar.metric("RMSE (Error)", f"{metrics.get('rmse', 'N/A')}", delta_color="inverse")
-        st.sidebar.metric("R² (Accuracy)", f"{metrics.get('r2', 'N/A')}")
-        st.sidebar.caption("Legacy metrics from the historical baseline model.")
-except FileNotFoundError:
-    st.sidebar.caption("Legacy metrics from the historical baseline model.")
-
-# --- MULTI-GAMEWEEK PROJECTIONS EXPORT ---
-# Feeds the open-source FPL MILP solvers (solioanalytics/open-fpl-solver,
-# formerly sertalpbilal/FPL-Optimization-Tools -- same repo, renamed) --
-# multi-gameweek planning, free-transfer valuation, chip strategy and
-# point-hit decisions are exactly what "Rate My Team" doesn't do, and
-# none of it should be rebuilt here. CSV column layout verified directly
-# against that repo's own parser (dev/data_parser.py, dev/solver.py) --
-# see src/projections.py's module docstring for the specifics.
-st.sidebar.divider()
-st.sidebar.markdown("### 📤 Multi-GW Projections Export")
-projection_horizon = st.sidebar.number_input(
-    "Horizon (gameweeks)", min_value=1, max_value=10, value=5, step=1,
-    help="How many gameweeks ahead to project, starting from the current/next gameweek."
-)
-st.sidebar.caption(
-    "For the open-source FPL solvers (solioanalytics/open-fpl-solver, "
-    "formerly FPL-Optimization-Tools) -- handles multi-gameweek planning, "
-    "transfer/chip strategy and point hits that this app doesn't. "
-    "**Fixture context (opponent, clean-sheet odds) updates per gameweek; "
-    "form (minutes, ICT) is frozen at today's values** -- the further out "
-    "a gameweek is, the more its number is really just current form "
-    "against that fixture, not a forecast of how form will have moved by "
-    "then. Double gameweeks are scored as a single fixture (known "
-    "under-count, not fixed here)."
-)
-if st.sidebar.button("Generate projections", key="gen_projections"):
-    if raw_json and model:
-        with st.spinner("Running predictions across the horizon..."):
-            proj_df, proj_gws = build_projection_csv(raw_json, model, horizon=int(projection_horizon))
-        st.session_state["projection_csv"] = proj_df.to_csv(index=False)
-        st.session_state["projection_gws"] = proj_gws
-    else:
-        st.sidebar.error("No live data available to build projections from.")
-
-if "projection_csv" in st.session_state:
-    gws = st.session_state.get("projection_gws", [])
-    gw_label = f"GW{gws[0]}-{gws[-1]}" if gws else "projections"
-    st.sidebar.download_button(
-        "⬇️ Download projections.csv",
-        data=st.session_state["projection_csv"],
-        file_name="projections.csv",
-        mime="text/csv",
-        help=f"Covers {gw_label}. Save into the solver's data/ folder and set \"datasource\": \"projections\" in its settings.",
-    )
-
-# --- REAL-TIME MATCHDAY INTELLIGENCE ---
-if raw_json and 'static' in raw_json and 'events' in raw_json['static']:
-    events_list = raw_json['static']['events']
-    # Reuse the same event process_data() already resolved for CURRENT_GW
-    # (is_current-priority -- see src/features.py) so this banner can never
-    # disagree with the sidebar/predictions about which gameweek "now" is.
-    target_ev = _current_gw_event or (events_list[0] if events_list else None)
-
-    if target_ev:
-        gw_id = target_ev.get('id', 1)
-        deadline_raw = target_ev.get('deadline_time')
-        
-        deadline_text = f"⏰ **Gameweek {gw_id}**"
-        countdown_text = ""
-        if deadline_raw:
-            try:
-                deadline_dt = pd.to_datetime(deadline_raw)
-                if deadline_dt.tzinfo is None:
-                    deadline_dt = deadline_dt.tz_localize('UTC')
-                
-                target_tz = TZ_MAP.get(selected_tz, datetime.now().astimezone().tzinfo)
-                converted_dt = deadline_dt.tz_convert(target_tz)
-                
-                now_utc = pd.Timestamp.now(tz='UTC')
-                diff = deadline_dt - now_utc
-                days = diff.days
-                hours = diff.seconds // 3600
-                mins = (diff.seconds % 3600) // 60
-                
-                tz_label = selected_tz
-                deadline_fmt = converted_dt.strftime('%a %d %b %H:%M')
-                if diff.total_seconds() > 0:
-                    countdown_str = f"in {days}d {hours}h" if days > 0 else f"in {hours}h {mins}m"
-                else:
-                    countdown_str = "PASSED / IN PROGRESS"
-                
-                deadline_text = f"⏰ **Gameweek {gw_id} Deadline:** {deadline_fmt} ({tz_label})"
-                countdown_text = f"⏳ **Countdown:** {countdown_str}"
-            except Exception:
-                deadline_text = f"⏰ **Gameweek {gw_id} Active**"
-                countdown_text = ""
-        
-        # 1. Live Deadline Banner
-        st.info(f"{deadline_text} | {countdown_text}")
-
-        # 2. Live Gameweek Fixtures Ribbon (Expandable)
-        gw_fixes = [f for f in raw_json.get('fixtures', []) if f.get('event') == gw_id]
-        if gw_fixes:
-            teams_dict = {t['id']: t['short_name'] for t in raw_json['static'].get('teams', [])}
-            with st.expander(f"⚽ Gameweek {gw_id} Live Matchday Fixtures ({len(gw_fixes)} Matches Scheduled)", expanded=False):
-                fix_cols = st.columns(min(len(gw_fixes), 5))
-                for idx, f in enumerate(gw_fixes):
-                    h_team = teams_dict.get(f.get('team_h'), str(f.get('team_h')))
-                    a_team = teams_dict.get(f.get('team_a'), str(f.get('team_a')))
-                    h_score = f.get('team_h_score', 0)
-                    a_score = f.get('team_a_score', 0)
-
-                    # Single source of truth for fixture state -- see
-                    # src/data_loader.py::fixture_status for why `finished`
-                    # alone isn't enough (it lags real match-end by up to an
-                    # hour). The emoji is derived from css_class rather than
-                    # re-checking started/finished, so there's exactly one
-                    # place that can disagree with itself.
-                    label, css_class = fixture_status(f, selected_tz)
-                    emoji = {"status-ft": "✅", "status-live": "🔴", "status-upcoming": "📅"}[css_class]
-                    if css_class == "status-upcoming":
-                        status_str = f"{emoji} {h_team} vs {a_team}"
-                    else:
-                        status_str = f"{emoji} {h_team} {h_score}-{a_score} {a_team}"
-
-                    col_target = fix_cols[idx % 5]
-                    with col_target:
-                        render_html(f'<div style="font-size:14px; margin-bottom:4px;"><strong>{status_str}</strong> | <span class="{css_class}" style="font-family: var(--font-mono); font-weight:600;">{label}</span></div>')
-
-st.markdown("---")
-
-# --- TABS ---
-tab_pred, tab_accuracy, tab_league, tab_hist, tab_hauls, tab_info = st.tabs(["🔮 Predictions", "📈 Accuracy", "🏟️ Mini-League", "📊 Player History", "🏆 Hall of Fame", "ℹ️ Documentation"])
-
-# === TAB 1: LIVE PREDICTIONS ===
-with tab_pred:
-    render_season_points_explorer(df_live, raw_json)
-    st.markdown("---")
-
-    totw_squad, totw_info = select_team_of_the_week(df_live)
-    if totw_squad is not None:
-        render_pitch_visualizer(totw_squad, totw_info, CURRENT_GW)
-
-    # Render Captaincy Rating Card
-    render_captaincy_card(df_live)
-    st.markdown("---")
-
-    if IS_PRESEASON:
-        st.info("ℹ️ **Pre-Season Active:** Gameweek 1 has not commenced yet. Predictions are calculated using prior season baselines (with positional median imputation for new transfers).")
-        st.subheader("🚀 Predicted Points for GW 1 (Pre-Season Baselines)")
-    else:
-        st.subheader(f"🚀 Predicted Points for GW {CURRENT_GW}")
-    
-    # 1. Controls
-    unique_teams = ["All"] + sorted([t for t in df_live['team_name'].dropna().unique()])
-    c1, c2, c3 = st.columns([1, 1, 2])
-    with c1: filter_pos = st.selectbox("Filter Position", ["All", "GKP", "DEF", "MID", "FWD"])
-    with c2: filter_team = st.selectbox("Filter Team", unique_teams)
-    with c3: search_query = st.text_input("Search Player")
-    
-    # 2. Filtering & Input Protection
-    view_df = df_live.copy()
-    if filter_pos != "All": view_df = view_df[view_df['position'] == filter_pos]
-    if filter_team != "All": view_df = view_df[view_df['team_name'] == filter_team]
-    
-    clean_search = sanitize_search_input(search_query)
-    if clean_search: 
-        view_df = view_df[view_df['web_name'].str.contains(re.escape(clean_search), case=False, na=False)]
-    
-    # 3. Preparation for Display
-    # Core columns are what a manager scans first: who, for whom, against
-    # whom, at what price in xP, and why. Everything else (DEFCON, bonus/BPS,
-    # price movement, ownership) is real signal but not first-glance signal,
-    # so it lives in a collapsed expander instead of stretching the table
-    # wide on mobile.
-    core_cols = {
-        'web_name': 'Player',
-        'team_name': 'Team',
-        'next_opponent': 'Opponent',
-        'position': 'Pos',
-        'final_xp': 'Predicted Points',
-        'reasoning': 'Reasoning'
-    }
-    secondary_cols = {
-        'web_name': 'Player',
-        'defensive_contribution_per_90': 'DEFCON/90',
-        'bonus': 'Bonus',
-        'bps': 'BPS',
-        'value': 'Price (£m)',
-        'price_change_today': 'Price Δ (Today)',
-        'ownership_pct': 'Owned %',
-        'next_match_difficulty': 'Diff (1-5)'
-    }
-
-    view_df_sorted = view_df.sort_values(by='final_xp', ascending=False).reset_index(drop=True)
-    core_table = view_df_sorted[core_cols.keys()].rename(columns=core_cols)
-    secondary_table = view_df_sorted[secondary_cols.keys()].rename(columns=secondary_cols)
-
-    # HIGHLIGHT TOP 5 PLAYERS (The Visual Fix with High-Contrast Text)
-    def highlight_top5(s):
-        is_top5 = s.name < 5 # Row order matches view_df_sorted, so top 5 are 0,1,2,3,4
-        return ['background-color: #2e2612; color: #F2F4F8;' if is_top5 else 'color: #F2F4F8;' for _ in s]
-
-    def format_price_delta(v):
-        if v > 0:
-            return f"▲ +£{v:.1f}m"
-        elif v < 0:
-            return f"▼ -£{abs(v):.1f}m"
-        return "— £0.0m"
-
-    st.dataframe(
-        core_table.style.apply(highlight_top5, axis=1).format({"Predicted Points": "{:.1f}"}),
-        use_container_width=True,
-        height=600,
-        hide_index=True
-    )
-
-    with st.expander("📊 View Underlying Defensive & Bonus Metrics"):
-        st.dataframe(
-            secondary_table.style.apply(highlight_top5, axis=1).format({
-                "Price (£m)": "£{:.1f}",
-                "DEFCON/90": "{:.1f}",
-                "Bonus": "{:d}",
-                "BPS": "{:d}",
-                "Price Δ (Today)": format_price_delta,
-                "Owned %": "{:.1f}%"
-            }),
-            use_container_width=True,
-            height=500,
-            hide_index=True
-        )
-
-    st.markdown("---")
-    # Render 5-Gameweek Fixture Ticker
-    render_fixture_ticker(raw_json, CURRENT_GW)
-
-    st.markdown("---")
-    # Render Rate My Team Evaluator
-    render_rate_my_team_section(df_live, raw_json, CURRENT_GW)
-
-# === TAB: ACCURACY (PUBLIC PREDICTED-VS-ACTUAL RECORD) ===
-with tab_accuracy:
-    render_accuracy_page()
-
-# === TAB: MINI-LEAGUE (GROUP VIEW) ===
-with tab_league:
-    render_mini_league_section(df_live, raw_json, CURRENT_GW)
-
-# === TAB 2: PLAYER HISTORY (ZERO DATA LEAKAGE) ===
-with tab_hist:
-    st.subheader("📊 Historical Player Performance Analysis")
-    st.caption("Inspect past gameweek predictions (raw xP) vs actual points scored across historical and current seasons without data leakage.")
+def render_player_history(df_live, raw_json, model):
+    st.subheader("Historical performance")
+    st.caption("Compare past base xP forecasts with actual points. Forecasts use data from earlier gameweeks.")
 
     df_hist_all = load_historical_data(model)
 
@@ -1566,47 +1120,37 @@ with tab_hist:
 
         player_df = df_hist_all[df_hist_all['name'] == selected_hist_player].copy()
 
-        # Check for live in-season played gameweek actuals via FPL API
-        if 'df_live' in locals() and not df_live.empty:
+        # Add published current-season results using the same positional model.
+        season_start = next(
+            (event.get("deadline_time") for event in raw_json["static"].get("events", []) if event["id"] == 1),
+            None,
+        )
+        first_deadline = pd.to_datetime(season_start, utc=True, errors="coerce")
+        if pd.notna(first_deadline) and "positions" in model:
+            full_names = df_live['first_name'].fillna('') + ' ' + df_live['second_name'].fillna('')
+            player_name = selected_hist_player.casefold()
             live_match = df_live[
-                (df_live['web_name'].str.contains(re.escape(selected_hist_player), case=False, na=False)) |
-                (df_live['first_name'].str.contains(re.escape(selected_hist_player), case=False, na=False)) |
-                (df_live['second_name'].str.contains(re.escape(selected_hist_player), case=False, na=False))
+                full_names.str.casefold().eq(player_name) | df_live['web_name'].str.casefold().eq(player_name)
             ]
-            if not live_match.empty:
+            if len(live_match) == 1:
                 live_p = live_match.iloc[0]
+                ensemble = model['positions'].get(live_p['position'])
                 summary = fetch_player_live_summary(int(live_p['id']))
-                if summary and summary.get('history'):
-                    live_hist_df = pd.DataFrame(summary['history'])
-                    if not live_hist_df.empty:
-                        curr_season_name = "2025-26"
-                        live_hist_df['name'] = selected_hist_player
-                        live_hist_df['season'] = curr_season_name
-                        live_hist_df['GW'] = live_hist_df['round']
-                        feat_cols = ['rolling_3_minutes', 'rolling_3_ict_index', 'rolling_3_creativity', 'rolling_3_influence', 'rolling_3_threat', 'rolling_3_total_points', 'value']
-                        for col in ['minutes', 'ict_index', 'creativity', 'influence', 'threat', 'total_points', 'value']:
-                            if col in live_hist_df.columns:
-                                live_hist_df[col] = pd.to_numeric(live_hist_df[col], errors='coerce').fillna(0)
-                        
-                        cols_to_roll = {
-                            'minutes': 'rolling_3_minutes',
-                            'ict_index': 'rolling_3_ict_index',
-                            'creativity': 'rolling_3_creativity',
-                            'influence': 'rolling_3_influence',
-                            'threat': 'rolling_3_threat',
-                            'total_points': 'rolling_3_total_points'
-                        }
-                        for src_col, target_col in cols_to_roll.items():
-                            live_hist_df[target_col] = (
-                                live_hist_df[src_col]
-                                .shift(1).rolling(3, min_periods=1).mean()
-                                .fillna(0)
-                            )
-                        X_live = live_hist_df[feat_cols].fillna(0)
-                        live_hist_df['raw_xp'] = model.predict(X_live)
-                        
-                        # Merge live current season rows with historical data
-                        player_df = pd.concat([player_df[player_df['season'] != curr_season_name], live_hist_df], ignore_index=True)
+                if ensemble is not None and summary and summary.get('history'):
+                    live_history = pd.DataFrame(summary['history']).rename(columns={'round': 'GW'})
+                    rolling_stats = ('minutes', 'ict_index', 'creativity', 'influence', 'threat', 'total_points')
+                    for col in (*rolling_stats, 'value'):
+                        live_history[col] = pd.to_numeric(live_history[col], errors='coerce').fillna(0)
+                    aggregation = dict.fromkeys(rolling_stats, 'sum')
+                    aggregation.update(value='first', opponent_team='first', was_home='first')
+                    live_history = live_history.groupby('GW', as_index=False).agg(aggregation)
+                    for col in rolling_stats:
+                        live_history[f'rolling_3_{col}'] = live_history[col].shift(1).rolling(3, min_periods=1).mean().fillna(0)
+                    live_history['raw_xp'] = ensemble.predict(live_history[model['features']])
+                    year = first_deadline.year
+                    season = f"{year}-{(year + 1) % 100:02d}"
+                    live_history['season'] = season
+                    player_df = pd.concat([player_df[player_df['season'] != season], live_history], ignore_index=True)
 
         if player_df.empty:
             st.info("No historical Premier League data on record for this player.")
@@ -1627,18 +1171,19 @@ with tab_hist:
                 # 1. Multi-Line Chart (Gameweek vs Predicted xP and Actual Points)
                 chart_df = season_player_df[['GW', 'raw_xp', 'total_points']].copy()
                 chart_df = chart_df.rename(columns={
-                    'raw_xp': 'Predicted xP',
+                    'raw_xp': 'Base xP',
                     'total_points': 'Actual Points'
                 })
                 chart_df['Gameweek'] = chart_df['GW'].astype(str)
 
                 st.markdown(f"#### 📈 {selected_hist_player} — {selected_season} Gameweek Performance")
                 
-                fig = px.line(chart_df, x='Gameweek', y=['Predicted xP', 'Actual Points'], markers=True)
+                fig = px.line(chart_df, x='Gameweek', y=['Base xP', 'Actual Points'], markers=True,
+                              color_discrete_sequence=['#DAF995', '#EDCD94'])
                 fig.update_xaxes(type='category', categoryorder='array', categoryarray=[str(i) for i in range(1, 39)], fixedrange=True)
                 fig.update_yaxes(fixedrange=True)
                 
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                st.plotly_chart(fig, width="stretch", config={'displayModeBar': False})
 
                 # 2. Summary Table
                 teams_map = {t['id']: t['short_name'] for t in raw_json['static']['teams']} if raw_json and 'static' in raw_json else {}
@@ -1657,7 +1202,7 @@ with tab_hist:
                     'GW': 'Gameweek',
                     'Opponent': 'Opponent',
                     'minutes': 'Minutes',
-                    'raw_xp': 'Predicted xP',
+                    'raw_xp': 'Base xP',
                     'total_points': 'Actual Points'
                 }
 
@@ -1670,15 +1215,14 @@ with tab_hist:
 
                 st.dataframe(
                     summary_table.style.format({
-                        "Predicted xP": "{:.1f}",
+                        "Base xP": "{:.1f}",
                         "Actual Points": "{:d}"
                     }),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )
 
-# === TAB 3: HALL OF FAME (ALL-TIME FPL LEGENDS) ===
-with tab_hauls:
+def render_hall_of_fame():
     st.subheader("🏆 All-Time FPL Hall of Fame")
     st.caption("Curated records of the greatest individual career totals and single-season point hauls in Fantasy Premier League history.")
 
@@ -1709,8 +1253,8 @@ with tab_hauls:
 
         st.markdown("---")
         st.dataframe(
-            df_career.style.set_properties(**{'color': '#F2F4F8'}).format({"Career FPL Points": "{:,d}"}),
-            use_container_width=True,
+            df_career.style.set_properties(**{'color': '#EFF4EE'}).format({"Career FPL Points": "{:,d}"}),
+            width="stretch",
             height=300,
             hide_index=True
         )
@@ -1735,66 +1279,235 @@ with tab_hauls:
 
         st.markdown("---")
         st.dataframe(
-            df_single.style.set_properties(**{'color': '#F2F4F8'}).format({"Points": "{:d}"}),
-            use_container_width=True,
+            df_single.style.set_properties(**{'color': '#EFF4EE'}).format({"Points": "{:d}"}),
+            width="stretch",
             height=320,
             hide_index=True
         )
 
     st.caption("ℹ️ Note: Historical records pre-dating 2016 are statically curated.")
 
-# === TAB 4: DOCUMENTATION ===
-with tab_info:
-    st.header("📘 System Documentation")
-    
-    st.subheader("1. Architecture")
-    st.markdown("""
-    **FPL Forecast Lab** uses a hybrid architecture:
-    * **Data Layer:** Live API ingestion from FPL endpoints.
-    * **Model Layer:** Position-specific XGBoost and Random Forest ensembles.
-    * **Logic Layer:** Rule-based adjustments for 'Pep Roulette' (Rotation) and Fixture Difficulty.
-    """)
-    
-    st.subheader("2. System Scope")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("✅ Capabilities")
-        st.success("""
-        * **Active Model:** Position-specific XGBoost and Random Forest ensembles.
-        * **Baseline:** Linear regression retained for comparison.
-        * **Live Context:** Adjusts for Injuries, Fixture Difficulty, and Rotation Risks.
-        * **Explainable Math:** Outputs step-by-step reasoning breakdown for every player.
-        * **Bias Correction:** Includes a "Big Club Tax" for non-premium assets.
-        """)
-    with c2:
-        st.subheader("❌ Limitations")
-        st.error("""
-        * **No Price Forecasting:** Uses current market values only.
-        * **No Cup Fatigue:** Ignores non-PL competitions.
-        * **Expert Heuristic Layer:** Quantitative tests indicate hand-crafted rules optimize Top-20 ranking utility while introducing slight point variance bias.
-        """)
 
-    st.subheader("3. Credits & Timeline")
-    st.text(f"By Subanta Poudel\nActive model: Position-specific XGBoost and Random Forest ensemble\nBaseline: Linear regression\nLast Updated: {datetime.now().strftime('%Y-%m-%d')}")
+def render_model_report():
+    st.title("Model Report")
+    results_dir = PROJECT_ROOT / "evaluation" / "results"
+    ensemble = json.loads((results_dir / "2025-26_position_models_v1.json").read_text())
+    baseline = json.loads((results_dir / "2025-26_linear_reg_v1.json").read_text())
+    st.caption(
+        f"Saved {ensemble['season']} base-forecast backtest · "
+        f"{ensemble['n_gameweeks']} gameweeks · {ensemble['n_player_gameweeks']:,} player-gameweeks"
+    )
+    comparison = pd.DataFrame(
+        [
+            {
+                "Model": label,
+                "MAE": result["overall"]["mae"],
+                "RMSE": result["overall"]["rmse"],
+                "Mean rank correlation": result["spearman_rank_correlation_mean_per_gw"],
+            }
+            for label, result in (("Position ensemble", ensemble), ("Linear regression", baseline))
+        ]
+    )
+    st.subheader("Forecast comparison")
+    st.caption("MAE and RMSE are in FPL points. Rank correlation is averaged across gameweeks.")
+    st.dataframe(
+        comparison, hide_index=True,
+        column_config={metric: st.column_config.NumberColumn(format="%.3f") for metric in comparison.columns[1:]},
+    )
 
-# --- FOOTER ---
-st.markdown("---")
-render_html("""
-    <style>
-    .footer {
-        position: fixed;
-        left: 0;
-        bottom: 0;
-        width: 100%;
-        background-color: #0F1420;
-        color: #8891A6;
-        text-align: center;
-        padding: 10px;
-        font-size: 14px;
-        border-top: 1px solid #2A3450;
+    st.subheader("Errors by actual outcome")
+    outcomes = {
+        "Zeros": "Did not play",
+        "Blanks": "Played, 2 pts or fewer",
+        "Tickers": "Scored 3–4 pts",
+        "Haulers": "Scored 5+ pts",
     }
-    </style>
-    <div class="footer">
-        FPL Forecast Lab · Subanta Poudel
-    </div>
-    """)
+    buckets = pd.DataFrame(ensemble["by_bucket"])
+    buckets["bucket"] = buckets["bucket"].map(outcomes)
+    buckets = buckets.rename(columns={"bucket": "Actual outcome", "n": "Rows", "mae": "MAE", "rmse": "RMSE"})
+    st.dataframe(
+        buckets, hide_index=True, column_order=("Actual outcome", "Rows", "MAE", "RMSE"),
+        column_config={
+            "Rows": st.column_config.NumberColumn(format="localized"),
+            "MAE": st.column_config.NumberColumn(format="%.2f"),
+            "RMSE": st.column_config.NumberColumn(format="%.2f"),
+        },
+    )
+
+    with st.expander("Methodology"):
+        st.markdown(
+            "The position ensemble blends XGBoost and Random Forest forecasts for each FPL position. "
+            "The saved backtest uses walk-forward features from earlier gameweeks and evaluates **base xP** "
+            "against actual FPL points.\n\n"
+            "**Adjusted xP** is the forecast shown on Gameweek and Players after adjustments for factors "
+            "such as availability, rotation and fixture difficulty. **Captain score** ranks captain options "
+            "using a separate heuristic. The model uses current market prices and Premier League fixtures."
+        )
+        legacy = json.loads((PROJECT_ROOT / "metrics.json").read_text())
+        st.caption(f"Legacy linear regression metrics from `metrics.json` · RMSE {legacy['rmse']:.2f} · R² {legacy['r2']:.3f}. {legacy['notes']}")
+        st.caption("Original model and applied ML work by Subanta Poudel.")
+
+    with st.expander("Backtest by season"):
+        if st.toggle("Show season charts and forecast misses"):
+            render_accuracy_page()
+
+    with st.expander("Hall of Fame"):
+        render_hall_of_fame()
+
+
+def render_solver_export(raw_json, model, current_gw):
+    horizon = st.number_input(
+        "Horizon (gameweeks)", min_value=1, max_value=10, value=5, step=1,
+        help="The export starts at the gameweek expected by the solver, which can be the next round during live play.",
+    )
+    st.caption(
+        "The CSV works with Open FPL Solver. Fixture context changes across gameweeks while player form "
+        "uses the current snapshot. Double gameweeks use a single representative fixture per player."
+    )
+    export_scope = (current_gw, horizon)
+    if st.button("Generate projections", key="gen_projections"):
+        with st.spinner("Generating projections…"):
+            projections, gameweeks = build_projection_csv(raw_json, model, horizon=horizon)
+        st.session_state["solver_export"] = (export_scope, projections.to_csv(index=False), gameweeks)
+
+    export = st.session_state.get("solver_export")
+    if export and export[0] == export_scope:
+        _, csv_text, gameweeks = export
+        if gameweeks:
+            st.caption(f"Covers Gameweek {gameweeks[0]}–{gameweeks[-1]}.")
+        st.download_button("Download projections.csv", csv_text, "projections.csv", "text/csv")
+
+
+ROUTES = {
+    "gameweek": "Gameweek",
+    "my-team": "My Team",
+    "players": "Players",
+    "mini-league": "Mini-League",
+    "model-report": "Model Report",
+}
+NAVIGATION_KEY = "deadline_navigation"
+TIMEZONE_LABELS = {
+    "UTC": "UTC",
+    "Europe/London": "United Kingdom",
+    "Europe/Paris": "Central Europe",
+    "Asia/Kathmandu": "Nepal",
+    "Asia/Kolkata": "India",
+    "America/New_York": "US Eastern",
+    "America/Los_Angeles": "US Pacific",
+}
+
+
+def timezone_label(option):
+    zone = getattr(TZ_MAP[option], "key", None)
+    return TIMEZONE_LABELS.get(zone, "Server local time")
+
+
+def initial_view():
+    view = st.query_params.get("view")
+    if view in ROUTES:
+        return view
+    # Older league bookmarks can also carry the original app's default team ID.
+    if "league_id" in st.query_params:
+        return "mini-league"
+    if "team_id" in st.query_params:
+        return "my-team"
+    return "gameweek"
+
+
+def sync_view():
+    st.query_params["view"] = st.session_state[NAVIGATION_KEY]
+
+
+def open_my_team():
+    st.session_state[NAVIGATION_KEY] = "my-team"
+    sync_view()
+
+
+def main():
+    st.set_page_config(page_title="Deadline Sheet", page_icon="⚽", layout="wide")
+    render_theme()
+
+    with st.container(key="deadline_masthead"):
+        wordmark, settings = st.columns([6, 1], vertical_alignment="center")
+        with wordmark:
+            render_wordmark()
+        with settings, st.popover("Timezone"):
+            selected_tz = st.selectbox("Display timezone", list(TZ_MAP), format_func=timezone_label)
+
+    if NAVIGATION_KEY not in st.session_state:
+        st.session_state[NAVIGATION_KEY] = initial_view()
+    view = st.radio(
+        "Primary navigation", list(ROUTES),
+        format_func=ROUTES.get, key=NAVIGATION_KEY, on_change=sync_view,
+        horizontal=True, label_visibility="collapsed", width="stretch",
+    )
+
+    if view == "model-report":
+        render_model_report()
+    else:
+        forecast = load_app_data()
+        if forecast is None:
+            st.title(ROUTES[view])
+            st.error("The forecast is temporarily unavailable. Try refreshing the page in a moment.")
+        else:
+            render_forecast_view(view, forecast, selected_tz)
+
+    render_html('''
+        <footer class="deadline-footer">
+            <span>Deadline Sheet · Subanta Poudel</span>
+            <span>Independent Fantasy Premier League project</span>
+        </footer>
+    ''')
+
+
+def render_forecast_view(view, forecast, selected_tz):
+    raw_json, model, df_live, current_gw, is_preseason = forecast
+    season_finished = df_live["season_finished"].fillna(False).any()
+
+    if view == "gameweek":
+        event = next((item for item in raw_json["static"].get("events", []) if item["id"] == current_gw), None)
+        render_gameweek_header(
+            current_gw, event, selected_tz,
+            is_preseason=is_preseason, season_finished=season_finished, on_rate_team=open_my_team,
+        )
+        render_captaincy_card(df_live)
+        with st.container(key="deadline_dashboard"):
+            projections, fixtures = st.columns([2, 1], gap="medium")
+            with projections:
+                render_player_projections(df_live, key_prefix="gameweek", sanitize_query=sanitize_search_input)
+            with fixtures:
+                render_gameweek_fixtures(raw_json, current_gw, selected_tz)
+
+        with st.expander("Five-gameweek fixture ticker"):
+            render_fixture_ticker(raw_json, current_gw)
+        with st.expander("Team of the Week"):
+            squad, squad_info = select_team_of_the_week(df_live)
+            if squad is not None:
+                render_pitch_visualizer(squad, squad_info, current_gw)
+            else:
+                st.caption("A full XI could not be selected from this gameweek’s forecast.")
+        return
+
+    st.title(ROUTES[view])
+    if season_finished:
+        st.caption(f"Season complete · Showing the final gameweek (GW {current_gw}).")
+    else:
+        st.caption(f"Gameweek {current_gw}")
+
+    if view == "my-team":
+        render_rate_my_team_section(df_live, current_gw)
+        with st.expander("Solver export"):
+            render_solver_export(raw_json, model, current_gw)
+    elif view == "players":
+        render_player_projections(df_live, key_prefix="players", sanitize_query=sanitize_search_input)
+        with st.expander("Season points explorer"):
+            render_season_points_explorer(df_live, raw_json)
+        with st.expander("Player history"):
+            if st.toggle("Show player history"):
+                render_player_history(df_live, raw_json, model)
+    elif view == "mini-league":
+        render_mini_league_section(df_live, current_gw)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,566 @@
+:root {
+    --ds-canvas: #101613;
+    --ds-panel: #171f1b;
+    --ds-raised: #1d2821;
+    --ds-line: #303c33;
+    --ds-outline: #65786a;
+    --ds-text: #eff4ee;
+    --ds-muted: #a9b9aa;
+    --ds-lime: #daf995;
+    --ds-ink: #172411;
+    --ds-sand: #edcd94;
+    --font-display: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+[data-testid="stMainBlockContainer"] {
+    max-width: 1328px;
+    padding: 3.25rem 1.5rem 2.5rem;
+}
+
+[data-testid="stHeader"] {
+    background-color: var(--ds-canvas);
+}
+
+.st-key-deadline_masthead [data-testid="stHorizontalBlock"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content;
+    align-items: center;
+}
+
+.st-key-deadline_masthead [data-testid="stColumn"],
+.st-key-deadline_week_header [data-testid="stColumn"],
+.st-key-deadline_dashboard > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    min-width: 0;
+    width: auto;
+}
+
+.st-key-deadline_masthead [data-testid="stPopover"] button {
+    border-color: var(--ds-outline);
+}
+
+.deadline-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    color: var(--ds-text);
+    font: 760 1.16rem/1.2 var(--font-display);
+    letter-spacing: -0.04em;
+}
+
+.deadline-mark {
+    position: relative;
+    flex: 0 0 2rem;
+    height: 1.875rem;
+    border-radius: 0.5rem;
+    background: var(--ds-lime);
+}
+
+.deadline-mark::before,
+.deadline-mark::after,
+.deadline-mark i {
+    position: absolute;
+    content: "";
+}
+
+.deadline-mark::before {
+    inset: 0.4rem 0.3rem;
+    border: 1px solid var(--ds-ink);
+    border-radius: 2px;
+}
+
+.deadline-mark::after {
+    inset: 0.4rem 50%;
+    width: 1px;
+    background: var(--ds-ink);
+}
+
+.deadline-mark i {
+    inset: 0.69rem auto auto 0.77rem;
+    width: 0.5rem;
+    height: 0.5rem;
+    border: 1px solid var(--ds-ink);
+    border-radius: 50%;
+}
+
+.st-key-deadline_navigation {
+    border-bottom: 1px solid var(--ds-line);
+    padding-bottom: 0.65rem;
+}
+
+.st-key-deadline_navigation [role="radiogroup"] {
+    flex-wrap: wrap;
+    gap: 0.25rem 0.4rem;
+}
+
+.st-key-deadline_navigation :is([data-testid="stRadioOption"], [data-baseweb="radio"]) {
+    margin: 0;
+    padding: 0.4rem 0.6rem;
+    color: var(--ds-muted);
+    border: 1px solid transparent;
+    border-radius: 0.45rem;
+}
+
+.st-key-deadline_navigation :is([data-testid="stRadioOption"], [data-baseweb="radio"]):has(input:checked) {
+    background: #263325;
+    color: var(--ds-lime);
+}
+
+.st-key-deadline_navigation [data-testid="stRadioOption"] > div > div:first-child {
+    display: none;
+}
+
+.st-key-deadline_navigation :is([data-testid="stRadioOption"], [data-baseweb="radio"]) p {
+    color: inherit;
+    font-size: 0.875rem;
+    font-weight: 620;
+}
+
+.st-key-deadline_navigation :is([data-testid="stRadioOption"], [data-baseweb="radio"]):has(input:focus-visible),
+.st-key-deadline_masthead button:focus-visible,
+.st-key-deadline_week_header button:focus-visible,
+.st-key-deadline_dashboard :is(button, input, [role="combobox"], summary):focus-visible,
+.st-key-deadline_projections_players :is(button, input, [role="combobox"], summary):focus-visible {
+    outline: 2px solid var(--ds-lime);
+    outline-offset: 2px;
+}
+
+.st-key-deadline_week_header {
+    margin-block: 0.5rem 0.9rem;
+}
+
+.st-key-deadline_week_header [data-testid="stHorizontalBlock"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content max-content;
+    align-items: end;
+}
+
+.deadline-week h1,
+[data-testid="stMainBlockContainer"] [data-testid="stHeading"] h1 {
+    margin: 0;
+    padding: 0;
+    font: 760 clamp(2.15rem, 4.4vw, 3.25rem)/1.04 var(--font-display);
+    letter-spacing: -0.06em;
+}
+
+.deadline-week p,
+.deadline-section-heading p,
+.deadline-captain p {
+    margin: 0;
+    color: var(--ds-muted);
+}
+
+.deadline-week p {
+    margin-top: 0.5rem;
+}
+
+.deadline-date {
+    display: grid;
+    gap: 0.2rem;
+    border-left: 2px solid var(--ds-lime);
+    padding-left: 0.8rem;
+    overflow-wrap: anywhere;
+}
+
+.deadline-label {
+    color: var(--ds-muted);
+    font-size: 0.69rem;
+    font-weight: 700;
+    letter-spacing: 0.075em;
+    line-height: 1.35;
+    text-transform: uppercase;
+}
+
+.deadline-time,
+.deadline-state {
+    display: block;
+    line-height: 1.25;
+}
+
+.deadline-time {
+    color: var(--ds-text);
+    font-size: 1rem;
+    font-weight: 720;
+    font-variant-numeric: tabular-nums;
+}
+
+.deadline-state {
+    color: var(--ds-sand);
+    font-size: 0.79rem;
+}
+
+.st-key-deadline_rate_team button {
+    min-height: 2.55rem;
+    padding: 0.45rem 0.85rem;
+    color: var(--ds-ink);
+    background: var(--ds-lime);
+    border: 1px solid var(--ds-lime);
+    border-radius: 0.5rem;
+    white-space: nowrap;
+}
+
+.st-key-deadline_rate_team button:hover {
+    color: var(--ds-ink);
+    background: #e6ffb2;
+}
+
+.st-key-deadline_rate_team button p {
+    color: var(--ds-ink);
+    font-size: 0.875rem;
+    font-weight: 700;
+}
+
+.deadline-section-heading {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.25rem 1rem;
+    margin-bottom: 0.65rem;
+}
+
+.deadline-section-heading h2,
+.deadline-fixtures h2,
+:is(.st-key-deadline_projections_gameweek, .st-key-deadline_projections_players) [data-testid="stHeading"] :is(h2, h3) {
+    margin: 0;
+    padding: 0;
+    font: 730 1.375rem/1.2 var(--font-display);
+    letter-spacing: -0.035em;
+}
+
+.deadline-section-heading p,
+.deadline-muted {
+    color: var(--ds-muted);
+    font-size: 0.875rem;
+}
+
+.deadline-captain-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.16fr) repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+@media (min-width: 601px) {
+    .deadline-captain-grid:has(> :only-child) {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .deadline-captain-grid:has(> :nth-child(2):last-child) {
+        grid-template-columns: minmax(0, 1.16fr) minmax(0, 1fr);
+    }
+}
+
+.deadline-captain {
+    position: relative;
+    min-width: 0;
+    padding: 0.9rem 1rem;
+    background: var(--ds-panel);
+    border: 1px solid var(--ds-line);
+    border-radius: 0.625rem;
+    overflow: hidden;
+}
+
+.deadline-captain:first-child {
+    color: var(--ds-ink);
+    background: var(--ds-lime);
+    border-color: var(--ds-lime);
+}
+
+.deadline-captain:first-child::after {
+    position: absolute;
+    inset: auto -1.8rem -5rem auto;
+    width: 11rem;
+    height: 11rem;
+    border: 1px solid rgb(61 91 41 / 22%);
+    border-radius: 50%;
+    content: "";
+    pointer-events: none;
+}
+
+.deadline-captain-order,
+.deadline-captain-main {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.25rem 0.75rem;
+}
+
+.deadline-captain-order {
+    flex-wrap: wrap;
+    align-items: baseline;
+    margin-bottom: 0.65rem;
+}
+
+.deadline-captain-main {
+    align-items: start;
+}
+
+.deadline-captain-score,
+.deadline-captain-points span {
+    color: var(--ds-muted);
+    font-size: 0.75rem;
+}
+
+.deadline-captain-score strong {
+    color: var(--ds-text);
+    font-family: var(--font-mono);
+}
+
+.deadline-captain h3 {
+    margin: 0;
+    padding: 0;
+    font: 740 clamp(1.08rem, 1.8vw, 1.45rem)/1.15 var(--font-display);
+    letter-spacing: -0.045em;
+    overflow-wrap: anywhere;
+}
+
+.deadline-captain-main p {
+    margin-top: 0.2rem;
+    font-size: 0.85rem;
+}
+
+.deadline-captain-main abbr {
+    text-decoration: none;
+}
+
+.deadline-captain-points {
+    flex-shrink: 0;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.deadline-captain-points strong,
+.deadline-captain-points span {
+    display: block;
+}
+
+.deadline-captain-points strong {
+    color: var(--ds-lime);
+    font: 740 1.65rem/1 var(--font-mono);
+    letter-spacing: -0.06em;
+}
+
+.deadline-captain p.deadline-captain-reason {
+    margin-top: 0.65rem;
+    font-size: 0.79rem;
+    line-height: 1.4;
+}
+
+.deadline-captain-reason:empty {
+    display: none;
+}
+
+.deadline-captain:first-child :is(.deadline-label, p, .deadline-captain-score, .deadline-captain-points span) {
+    color: #314423;
+}
+
+.deadline-captain:first-child :is(h3, .deadline-captain-score strong, .deadline-captain-points strong) {
+    color: var(--ds-ink);
+}
+
+.st-key-deadline_dashboard {
+    margin-top: 0.25rem;
+}
+
+:is(.st-key-deadline_projections_gameweek, .st-key-deadline_projections_players) {
+    container-type: inline-size;
+    padding: 1rem;
+    background: var(--ds-panel);
+    border: 1px solid var(--ds-line);
+    border-radius: 0.625rem;
+}
+
+:is(.st-key-deadline_projections_gameweek, .st-key-deadline_projections_players)
+    :is([data-baseweb="input"], [data-baseweb="select"] > div) {
+    border-color: var(--ds-outline);
+}
+
+.deadline-fixtures {
+    overflow: hidden;
+    background: var(--ds-panel);
+    border: 1px solid var(--ds-line);
+    border-radius: 0.625rem;
+}
+
+.deadline-fixtures h2 {
+    padding: 1rem 1rem 0.65rem;
+}
+
+.deadline-fixture-group h3 {
+    margin: 0;
+    padding: 0.45rem 1rem;
+    border-top: 1px solid var(--ds-line);
+    color: var(--ds-muted);
+    background: var(--ds-raised);
+    font: 670 0.73rem/1.25 var(--font-display);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.deadline-fixture-group.status-live h3 {
+    color: var(--ds-sand);
+}
+
+.deadline-fixture-group ul {
+    display: grid;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.deadline-match {
+    margin: 0;
+    padding: 0.48rem 1rem;
+}
+
+.deadline-match + .deadline-match {
+    border-top: 1px solid var(--ds-line);
+}
+
+.deadline-match-line {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content minmax(0, 1fr);
+    justify-items: center;
+    align-items: center;
+    gap: 0.35rem;
+    text-align: center;
+    font: 630 0.84rem/1.1 var(--font-mono);
+}
+
+.deadline-match-line span {
+    color: var(--ds-muted);
+}
+
+.deadline-club {
+    justify-self: start;
+    min-width: 2rem;
+    padding: 0.38rem 0.36rem;
+    color: #d2e5ca;
+    background: #2a3a2d;
+    border-radius: 0.35rem;
+    text-decoration: none;
+    font-size: 0.74rem;
+    overflow-wrap: anywhere;
+}
+
+.deadline-club:last-child {
+    justify-self: end;
+}
+
+.deadline-kickoff {
+    display: block;
+    margin-top: 0.2rem;
+    color: var(--ds-muted);
+    text-align: center;
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.deadline-fixtures-empty {
+    margin: 0;
+    padding: 0 1rem 1rem;
+    color: var(--ds-muted);
+    font-size: 0.875rem;
+}
+
+.st-key-deadline_entry {
+    max-width: 35rem;
+}
+
+.deadline-footer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.35rem 1rem;
+    margin-top: 1.5rem;
+    padding-top: 0.9rem;
+    border-top: 1px solid var(--ds-line);
+    color: var(--ds-muted);
+    font-size: 0.81rem;
+}
+
+@container (max-width: 540px) {
+    :is(.st-key-deadline_projection_filters_gameweek, .st-key-deadline_projection_filters_players)
+        [data-testid="stHorizontalBlock"] {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.6rem;
+    }
+
+    :is(.st-key-deadline_projection_filters_gameweek, .st-key-deadline_projection_filters_players)
+        [data-testid="stColumn"] {
+        min-width: 0;
+        width: auto;
+    }
+
+    :is(.st-key-deadline_projection_filters_gameweek, .st-key-deadline_projection_filters_players)
+        [data-testid="stColumn"]:first-child {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 880px) {
+    .st-key-deadline_week_header [data-testid="stHorizontalBlock"] {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) max-content;
+    }
+
+    .st-key-deadline_week_header [data-testid="stColumn"]:first-child {
+        grid-column: 1 / -1;
+    }
+
+    .st-key-deadline_dashboard > [data-testid="stHorizontalBlock"],
+    .st-key-deadline_dashboard > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .st-key-deadline_dashboard > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        min-width: 0;
+        width: auto;
+    }
+
+    .deadline-fixture-group ul {
+        grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+    }
+
+    .deadline-match,
+    .deadline-match + .deadline-match {
+        border-top: 1px solid var(--ds-line);
+    }
+}
+
+@media (max-width: 600px) {
+    [data-testid="stMainBlockContainer"] {
+        padding-inline: 0.9rem;
+    }
+
+    .st-key-deadline_navigation :is([data-testid="stRadioOption"], [data-baseweb="radio"]) {
+        padding: 0.3rem 0.42rem;
+    }
+
+    .deadline-captain-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0.55rem;
+    }
+
+    .deadline-captain {
+        padding: 0.75rem 0.85rem;
+    }
+
+    :is(.st-key-deadline_projections_gameweek, .st-key-deadline_projections_players) {
+        padding: 0.75rem;
+    }
+}
+
+@media (max-width: 420px) {
+    .deadline-fixture-group ul {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 360px) {
+    .st-key-deadline_week_header [data-testid="stHorizontalBlock"] {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0.7rem;
+    }
+}
