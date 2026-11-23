@@ -51,12 +51,17 @@ def main():
         with patch("src.features.fetch_full_history", side_effect=lambda: history.copy()):
             app = AppTest.from_file(str(repo / "app.py"), default_timeout=90).run()
     errors = [element.message for element in app.exception]
-    if errors:
-        print("FAIL application execution", errors)
+    if errors or app.error:
+        print("FAIL application execution", errors + [element.value for element in app.error])
         return 1
+    projections = next((element.value for element in app.dataframe if "final_xp" in element.value), None)
+    if projections is None or projections.empty:
+        print("FAIL expected a player projection grid")
+        return 1
+    navigation = app.radio(key="deadline_navigation")
     print("PASS main app execution")
-    print("Tabs", [element.label for element in app.tabs])
-    print("Dataframes", len(app.dataframe))
+    print("Navigation", navigation.options)
+    print("Player projections", len(projections))
     print("Scope uses", input_label, "and committed history")
     return 0
 

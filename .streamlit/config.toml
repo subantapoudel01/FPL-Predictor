@@ -1,9 +1,15 @@
 [theme]
-# Blaugrana — navy ground, garnet accent, gold reserved for captain/star emphasis in app.py
-primaryColor = "#D64B5E"
-backgroundColor = "#0F1420"
-secondaryBackgroundColor = "#1A2235"
-textColor = "#F2F4F8"
+base = "dark"
+primaryColor = "#DAF995"
+backgroundColor = "#101613"
+secondaryBackgroundColor = "#171F1B"
+textColor = "#EFF4EE"
+borderColor = "#65786A"
+dataframeBorderColor = "#303C33"
+dataframeHeaderBackgroundColor = "#1D2821"
+showWidgetBorder = true
+baseRadius = "8px"
+font = "sans-serif"
 
 [browser]
 gatherUsageStats = false

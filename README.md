@@ -1,89 +1,66 @@
-# FPL Forecast Lab
+# Deadline Sheet
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://catalan-fpl.streamlit.app)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+Deadline Sheet helps Fantasy Premier League managers check the gameweek deadline,
+compare captain picks and plan squad decisions. It builds on **FPL Forecast Lab**,
+the original applied machine learning project by Subanta Poudel.
 
-Personal applied machine learning project by Subanta Poudel. The app
-forecasts Fantasy Premier League points using position-specific XGBoost and
-Random Forest ensembles. It shows adjusted points and a separate captain
-ranking.
+**Designed by Animythstudios.**
 
-In the saved 2025-26 backtest (38 gameweeks, 29,338 player-gameweek rows),
-the ensemble had MAE 1.167 points versus 1.055 for linear regression. Mean
-rank correlation improved from 0.684 to 0.693. These results measure base
-forecasts before adjustments.
+| View | What you can do |
+| --- | --- |
+| Gameweek | Check the deadline and fixtures, compare captain picks, and scan player projections. |
+| My Team | Load your public Team ID, check the starting XI and bench, review transfer suggestions, and export a solver CSV. |
+| Players | Search the full projection list, inspect scoring adjustments, and explore season points and player history. |
+| Mini-League | Load a classic league by ID and compare standings, squad projections, captains, and ownership. |
+| Model Report | Compare saved backtest results and explore evaluation methods and historical records. |
 
----
+Team and league links support `?team_id=123456` and `?league_id=123456`. The
+**Timezone** control sets the display timezone for deadlines and kickoffs. The
+deadline countdown is recalculated when the screen reruns.
 
-## ❓ What is FPL Predictor?
+## Reading the forecasts
 
-FPL Predictor is an explainable decision-support application for Fantasy
-Premier League managers. It forecasts upcoming player performance and
-explains the adjusted points shown to users.
+- **Base xP** is the model forecast before scoring adjustments.
+- **Projected points** or **Adjusted xP** includes the app’s rules for factors such as fixtures, rotation, and availability.
+- **Captain score** is the ranking heuristic used to order captain options.
 
-Unlike traditional "black-box" artificial intelligence that simply outputs a number without context, FPL Forecast Lab uses an **Explainable AI framework**—every projection clearly explains why a player is expected to score points (factoring in recent form, matchup difficulty, clean sheet odds, and squad rotation risks). Users can enter their unique FPL Team ID to immediately receive tailored starting XI optimizations and budget-compliant transfer recommendations.
+The serving model uses position-specific XGBoost and Random Forest ensembles in
+`Models/position_models_v1.pkl`. The saved 2025–26 base-forecast backtest covers
+38 gameweeks and 29,338 player-gameweeks. The ensemble recorded MAE of 1.167
+points and mean gameweek rank correlation of 0.693. Linear regression recorded
+MAE of 1.055 points and mean rank correlation of 0.684.
 
----
+The solver CSV uses one representative fixture per player in double gameweeks.
+Fixture context changes across the horizon and form inputs use the current snapshot.
 
-## ✨ Key Features
+## Run locally
 
-- 🔮 **Explainable xP Engine:** Real-time point predictions broken down into base performance, fixture ease, clean sheet odds, and squad-depth rotation risk.
-- 📊 **Rate My Team & Squad Import:** Enter your FPL Team ID for instant Starting XI projections, formation-valid bench optimization, and 3-player-club-rule compliant transfer targets.
-- ⚽ **Matchday Center:** Local timezone-aware fixture kickoffs, live deadline countdown, and dynamic 5-gameweek FDR scheduling matrix.
-- 📈 **Historical Performance Analysis:** Zero-leakage multi-season tracking plotting predicted vs. actual points across 110,000+ match records.
-- 🏆 **FPL Hall of Fame:** Curated all-time career and single-season legend records.
-
----
-
-## 🛠️ Tech Stack & Architecture
-
-- **Backend / Modeling:** Python, Scikit-learn, XGBoost, Random Forest, Pandas, PyArrow
-- **Dashboard / Frontend:** Streamlit, Plotly Express, Custom Responsive CSS
-- **Data Ingestion:** Official Fantasy Premier League REST API + Vaastav Multi-Season Historical Archive + Understat historical enrichment
-- **Security:** CSRF protection, sanitized regex inputs, trimmed API payloads, zero hardcoded credentials
-
----
-
-## 🚀 Quickstart
+The macOS setup uses Python 3.11 and Homebrew’s `libomp` for XGBoost.
 
 ```bash
 brew install python@3.11 libomp
-/opt/homebrew/bin/python3.11 -m venv ~/.venvs/fpl-macos
-~/.venvs/fpl-macos/bin/python -m pip install -r requirements-macos.txt
-~/.venvs/fpl-macos/bin/python -m pip install scikit-learn==1.9.0
-~/.venvs/fpl-macos/bin/python -m pip check
-~/.venvs/fpl-macos/bin/python -m streamlit run app.py
+/opt/homebrew/bin/python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements-macos.txt
+.venv/bin/python -m pip check
+.venv/bin/python -m streamlit run app.py
 ```
 
-The tested macOS runtime is Python 3.11.18. `requirements-macos.txt`
-pins NumPy 1.26.4, pandas 2.2.3, scikit-learn 1.4.2, SciPy 1.13.1,
-joblib 1.4.2, Streamlit 1.67.0, requests 2.34.2, Plotly 7.1.0,
-PyArrow 19.0.1, tzdata 2026.6, pytest 9.2.0, ipykernel 7.4.0, and
-matplotlib 3.9.4. The active position ensemble was trained with
-scikit-learn 1.9.0, so that pin is applied after the base profile.
+The macOS profile pins scikit-learn 1.9.0 to match the saved ensemble and
+Streamlit 1.67.0 for the UI. The existing hosted release is listed below.
+[FPL Forecast Lab on Streamlit](https://catalan-fpl.streamlit.app)
 
-The active model is the position-specific XGBoost and Random Forest ensemble
-in `Models/position_models_v1.pkl`. Linear regression is the legacy baseline;
-the component model remains disabled.
+## Verify locally
 
-## Release verification
+```bash
+.venv/bin/python scripts/verify_local.py
+.venv/bin/python scripts/verify_app.py
+.venv/bin/python scripts/verify_app.py --api-unavailable
+.venv/bin/python -m pytest -q
+```
 
-All checks below used `~/.venvs/fpl-macos/bin/python`:
-
-| Check | Result |
-|---|---|
-| `scripts/verify_local.py` | Passed |
-| `scripts/verify_app.py` | Passed with synthetic API fixture and committed history |
-| `scripts/verify_app.py --api-unavailable` | Passed |
-| `-m pytest -q` | Passed: 8 tests |
-| Live forecast | Passed: GW11; FUL (H) opponent matched against fresh FPL API |
-| Current live API | Passed during release check |
-
-The export currently represents one fixture per player for a gameweek. In a
-double gameweek, historical export logic keeps the first representative
-fixture/opponent rather than counting both fixtures. This remains a documented
-release limitation; live fixture data still contains the season's fixture
-rows.
+The app smoke check uses the committed synthetic API fixture and historical data.
+Pass `--live` to `scripts/verify_app.py` to check the current FPL feed. The live
+API whitelist tests skip if the feed is unreachable.
 
 ## Repository layout and data policy
 
