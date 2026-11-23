@@ -4,6 +4,8 @@ Deadline Sheet helps Fantasy Premier League managers check the gameweek deadline
 compare captain picks and plan squad decisions. It builds on **FPL Forecast Lab**,
 the original applied machine learning project by Subanta Poudel.
 
+**Designed by Animythstudios.**
+
 | View | What you can do |
 | --- | --- |
 | Gameweek | Check the deadline and fixtures, compare captain picks, and scan player projections. |

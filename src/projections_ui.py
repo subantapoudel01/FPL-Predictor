@@ -9,7 +9,7 @@ def render_player_projections(df_live, *, key_prefix, sanitize_query):
     """Display rule-adjusted forecasts while keeping the scores numeric."""
     with st.container(key=f"deadline_projections_{key_prefix}"):
         st.header("Player projections", anchor=f"{key_prefix}-projections")
-        st.caption("Projected points are the forecast after the app’s scoring adjustments.")
+        st.caption("xP is projected points after the app’s scoring adjustments.")
         if df_live.empty:
             st.info("Player projections are unavailable for this gameweek.")
             return
@@ -70,11 +70,13 @@ def render_player_projections(df_live, *, key_prefix, sanitize_query):
 
         players = players.sort_values("final_xp", ascending=False)
         columns = {
-            "web_name": st.column_config.TextColumn("Player", width=132, pinned=True),
-            "final_xp": st.column_config.NumberColumn("Projected points", width=120, format="%.1f"),
+            "web_name": st.column_config.TextColumn("Player", width=118, pinned=True),
+            "final_xp": st.column_config.NumberColumn(
+                "xP", width=52, format="%.1f", help="Projected gameweek points after scoring adjustments."
+            ),
+            "next_opponent": st.column_config.TextColumn("Opponent", width=84, help="H is home, A is away."),
             "team_name": st.column_config.TextColumn("Club", width=110),
             "position": st.column_config.TextColumn("Pos", width=56),
-            "next_opponent": st.column_config.TextColumn("Opponent", width=95),
             "value": st.column_config.NumberColumn("Price", width=72, format="£%.1fm"),
         }
         visible_rows = min(len(players), 9 if key_prefix == "gameweek" else 15)

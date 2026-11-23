@@ -555,6 +555,9 @@ def find_best_valid_bench_swap(starters, bench):
     return best_swap
 
 
+TRANSFER_PRICE_ALLOWANCE_M = 0.5
+
+
 def recommend_gameweek_transfer(starters, squad_df, df_live):
     """
     Identifies primary sell candidate (injured starting outfielder or lowest xP starting outfielder),
@@ -586,7 +589,7 @@ def recommend_gameweek_transfer(starters, squad_df, df_live):
     sell_price = sell_val_raw / 10.0 if sell_val_raw > 20 else sell_val_raw
     sell_club = sell_candidate.get('team_name')
 
-    max_budget = sell_price + 0.5
+    max_budget = sell_price + TRANSFER_PRICE_ALLOWANCE_M
 
     squad_ids = set(squad_df['element'].dropna().astype(int).tolist()) if 'element' in squad_df.columns else set()
     squad_club_counts = squad_df['team_name'].value_counts().to_dict()
@@ -732,9 +735,9 @@ def render_rate_my_team_section(df_live, current_gw):
                 )
             else:
                 st.metric(
-                    label="✅ Bench Optimization",
-                    value="Starting XI Optimal",
-                    delta="No Bench Swaps Needed"
+                    label="Bench swap",
+                    value="No swap found",
+                    help="Checks for a single formation-valid swap that increases projected points.",
                 )
 
         if best_swap is not None:
@@ -767,7 +770,7 @@ def render_rate_my_team_section(df_live, current_gw):
                     
                 render_html(f"""
                 <div style="background: #1D2821; border: 1px solid #303C33; border-radius: 10px; padding: 14px 18px; margin-top: 15px; margin-bottom: 15px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">
-                    <div style="font-family: var(--font-display); font-weight: 700; font-size: 17px; color: #EDCD94; margin-bottom: 8px;">🎯 Recommended Gameweek Transfer</div>
+                    <div style="font-family: var(--font-display); font-weight: 700; font-size: 17px; color: #EDCD94; margin-bottom: 8px;">Transfer suggestion</div>
                     <div style="font-size: 14px; color: #EFF4EE; display: flex; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <span style="background: #7f1d1d; color: #f87171; font-weight: bold; padding: 3px 8px; border-radius: 4px;">[SELL]</span>
                         <strong>{sell_n}</strong> <span style="font-family: var(--font-mono);">({sell_xp_val:.1f} xP)</span>
@@ -780,9 +783,11 @@ def render_rate_my_team_section(df_live, current_gw):
                 </div>
                 """)
             else:
-                st.info("✅ **Squad Transfer Status:** No transfer recommended this week. Your starting players are already optimal for their budget range.")
+                st.info("No higher-projection replacement found for the selected starter within the estimated budget.")
+            st.caption(f"Transfer estimates use listed player prices and allow up to £{TRANSFER_PRICE_ALLOWANCE_M:.1f}m extra.")
 
-        st.markdown("#### 📋 Squad Breakdown & Captain Multipliers")
+        st.subheader("Squad projections")
+        st.caption("Effective xP applies the multipliers from the imported FPL lineup.")
         
         def format_role(row):
             mult = row.get('multiplier', 1)
@@ -803,14 +808,14 @@ def render_rate_my_team_section(df_live, current_gw):
         merged['Projected Points'] = merged['final_xp'] * merged['multiplier']
 
         display_rmt_cols = {
-            'position_pick': 'Slot',
             'web_name': 'Player',
-            'team_name': 'Team',
+            'final_xp': 'Adjusted xP',
+            'Role': 'Role',
+            'Projected Points': 'Effective xP',
+            'team_name': 'Club',
             'position_pred': 'Pos',
             'next_opponent': 'Opponent',
-            'Role': 'Role',
-            'final_xp': 'Adjusted xP',
-            'Projected Points': 'Effective xP'
+            'position_pick': 'Slot',
         }
 
         rmt_table = merged[display_rmt_cols.keys()].rename(columns=display_rmt_cols).sort_values(by='Slot').reset_index(drop=True)
@@ -826,10 +831,16 @@ def render_rate_my_team_section(df_live, current_gw):
                 return ['background-color: #171F1B; color: #EFF4EE;' for _ in s]
 
         st.dataframe(
-            rmt_table.style.apply(style_rmt_rows, axis=1).format({"Adjusted xP": "{:.1f}", "Effective xP": "{:.1f}"}),
+            rmt_table.style.apply(style_rmt_rows, axis=1),
+            column_config={
+                "Player": st.column_config.TextColumn(width=140, pinned=True),
+                "Adjusted xP": st.column_config.NumberColumn(width=105, format="%.1f"),
+                "Effective xP": st.column_config.NumberColumn(width=112, format="%.1f"),
+            },
             width="stretch",
             height=420,
-            hide_index=True
+            hide_index=True,
+            alt="Squad projections in lineup order",
         )
 
 # --- HELPER: ACCURACY (PUBLIC PREDICTED-VS-ACTUAL RECORD) ---
@@ -1454,8 +1465,8 @@ def main():
 
     render_html('''
         <footer class="deadline-footer">
-            <span>Deadline Sheet · Subanta Poudel</span>
-            <span>Independent Fantasy Premier League project</span>
+            <span>Designed by Animythstudios</span>
+            <span>Original forecast model by Subanta Poudel</span>
         </footer>
     ''')
 

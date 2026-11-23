@@ -119,6 +119,7 @@
 .st-key-deadline_navigation :is([data-testid="stRadioOption"], [data-baseweb="radio"]):has(input:focus-visible),
 .st-key-deadline_masthead button:focus-visible,
 .st-key-deadline_week_header button:focus-visible,
+.deadline-gameweek-links a:focus-visible,
 .st-key-deadline_dashboard :is(button, input, [role="combobox"], summary):focus-visible,
 .st-key-deadline_projections_players :is(button, input, [role="combobox"], summary):focus-visible {
     outline: 2px solid var(--ds-lime);
@@ -208,6 +209,37 @@
     color: var(--ds-ink);
     font-size: 0.875rem;
     font-weight: 700;
+}
+
+.deadline-gameweek-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.35rem;
+    margin-top: -0.35rem;
+}
+
+.deadline-gameweek-links a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 2.375rem;
+    padding-inline: 0.55rem;
+    color: var(--ds-muted);
+    border-radius: 0.4rem;
+    font-size: 0.875rem;
+    font-weight: 650;
+    text-decoration: underline;
+    text-decoration-color: var(--ds-outline);
+    text-underline-offset: 0.2em;
+}
+
+.deadline-gameweek-links a:hover {
+    color: var(--ds-lime);
+    background: var(--ds-raised);
+    text-decoration-color: currentColor;
+}
+
+:is(#gameweek-projections, #deadline-fixtures) {
+    scroll-margin-block-start: 4rem;
 }
 
 .deadline-section-heading {

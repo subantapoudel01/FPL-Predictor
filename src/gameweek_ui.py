@@ -41,26 +41,28 @@ def _local_time(timestamp, selected_tz):
 
 def _deadline_state(deadline, event, is_preseason, season_finished):
     if season_finished:
-        return "Season complete"
-
+        return "Season complete", "Review my team"
     if event.get("finished"):
-        return "Gameweek complete"
+        return "Gameweek complete", "Review my team"
+    if deadline is None:
+        if is_preseason:
+            return "Preseason", "Rate my team"
+        return "", "Open My Team"
 
-    if deadline is not None:
-        remaining = deadline - pd.Timestamp.now(tz="UTC")
-        if remaining.total_seconds() > 0:
-            hours, minutes = divmod(remaining.seconds // 60, 60)
-            if remaining.days:
-                countdown = f"{remaining.days}d {hours}h"
-            elif hours:
-                countdown = f"{hours}h {minutes}m"
-            else:
-                countdown = f"{minutes}m" if minutes else "under 1m"
-            snapshot = f"Countdown snapshot · {countdown}"
-            return f"Preseason · {snapshot}" if is_preseason else snapshot
-        return "Preseason" if is_preseason else "Gameweek in progress"
+    remaining = deadline - pd.Timestamp.now(tz="UTC")
+    if remaining.total_seconds() <= 0:
+        return "Deadline passed · Lineups locked", "Review my team"
 
-    return "Preseason" if is_preseason else ""
+    hours, minutes = divmod(remaining.seconds // 60, 60)
+    if remaining.days:
+        countdown = f"{remaining.days}d {hours}h"
+    elif hours:
+        countdown = f"{hours}h {minutes}m"
+    else:
+        countdown = f"{minutes}m" if minutes else "under 1m"
+    snapshot = f"Countdown snapshot · {countdown}"
+    state = f"Preseason · {snapshot}" if is_preseason else snapshot
+    return state, "Rate my team"
 
 
 def render_gameweek_header(
@@ -74,7 +76,7 @@ def render_gameweek_header(
 ):
     event = event or {}
     deadline = _timestamp(event.get("deadline_time"))
-    state = _deadline_state(deadline, event, is_preseason, season_finished)
+    state, team_action = _deadline_state(deadline, event, is_preseason, season_finished)
     state_html = f'<span class="deadline-state">{state}</span>' if state else ""
     if deadline is None:
         time_html = '<strong class="deadline-time">Deadline unavailable</strong>'
@@ -102,13 +104,19 @@ def render_gameweek_header(
             """)
         with team:
             st.button(
-                "Rate my team",
+                team_action,
                 type="primary",
                 key="deadline_rate_team",
                 on_click=on_rate_team,
             )
         if is_preseason and not season_finished:
             st.caption("Gameweek 1 projections use prior-season data and position medians for new players.")
+        st.html("""
+            <nav class="deadline-gameweek-links" aria-label="Gameweek sections">
+                <a href="#gameweek-projections">Projections</a>
+                <a href="#deadline-fixtures">Fixtures</a>
+            </nav>
+        """)
 
 
 def _finite_number(value):
