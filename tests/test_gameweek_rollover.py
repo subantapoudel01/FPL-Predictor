@@ -100,11 +100,43 @@ def test_finished_current_rolls_to_upcoming_gameweek():
     assert not bool(frame.iloc[0]["season_finished"])
 
 
+def test_lagging_current_flags_roll_to_upcoming_after_all_fixtures_finish():
+    payload = _payload(current_finished=False, gw=10)
+    payload["fixtures"][0]["finished"] = True
+    payload["fixtures"][0]["finished_provisional"] = True
+    payload["fixtures"].append({
+        **payload["fixtures"][0],
+        "id": 102,
+        "event": 11,
+        "finished": False,
+        "finished_provisional": False,
+    })
+
+    assert detect_target_gameweek(
+        payload["static"]["events"],
+        now=pd.Timestamp("2026-11-18T12:00:00Z"),
+        fixtures=payload["fixtures"],
+    ) == 11
+
+    frame, target_gw, is_preseason = process_data(payload)
+    assert target_gw == 11
+    assert not is_preseason
+    assert frame.iloc[0]["next_opponent"] == "BBB (H)"
+
+
 def test_unfinished_current_gameweek_stays_live():
     now = pd.Timestamp("2026-11-18T12:00:00Z")
     payload = _payload(current_finished=False, gw=10)
 
-    assert detect_target_gameweek(payload["static"]["events"], now=now) == 10
+    assert detect_target_gameweek(
+        payload["static"]["events"], now=now, fixtures=payload["fixtures"]
+    ) == 10
+
+    empty_fixture_payload = _payload(current_finished=False, gw=10)
+    empty_fixture_payload["fixtures"] = []
+    assert detect_target_gameweek(
+        empty_fixture_payload["static"]["events"], now=now, fixtures=[]
+    ) == 10
 
     frame, target_gw, is_preseason = process_data(payload, target_gw=None)
     assert target_gw == 10
